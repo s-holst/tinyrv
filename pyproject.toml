@@ -1,0 +1,46 @@
+[project]
+name = "tinyrv"
+version = "0.0.1"
+authors = [
+  { name="Stefan Holst", email="mail@s-holst.de" },
+]
+description = "A tiny RISC-V instruction decoder and emulator"
+readme = "README.md"
+requires-python = ">=3.8"
+requires = ["pyyaml"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/s-holst/tinyrv"
+Issues = "https://github.com/s-holst/tinyrv/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "tinyrv.py",
+  "riscv-opcodes/instr_dict.yaml",
+  "riscv-opcodes/csrs.csv",
+  "riscv-opcodes/csrs32.csv",
+  "riscv-opcodes/arg_lut.csv",
+  "riscv-opcodes/constants.py",
+]
+
+[tool.hatch.build.targets.wheel]
+include = [
+  "tinyrv.py",
+  "riscv-opcodes/instr_dict.yaml",
+  "riscv-opcodes/csrs.csv",
+  "riscv-opcodes/csrs32.csv",
+  "riscv-opcodes/arg_lut.csv",
+  "riscv-opcodes/constants.py",
+]
+
+[tool.hatch.build.targets.wheel.sources]
+"riscv-opcodes" = "tinyrv/riscv-opcodes"
