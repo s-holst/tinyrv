@@ -68,7 +68,7 @@ Simulate a binary:
 from tinyrv import rvmem, rvsim
 mem = rvmem(xlen=32)  # xlen just for output formatting
 mem.load('firmware.bin', base=0)
-rv = rvsim(mem, xlen=32)
+rv = rvsim(mem, xlen=32)  # xlen affects overflows, sign extensions
 print(rv)  # print registers
 print()
 rv.step(10)  # simulate up to 10 instructions
@@ -84,7 +84,7 @@ x05(t0)=00000000  x13(a3)=00000000  x21(s5)=00000000  x29(t4)=00000000
 x06(t1)=00000000  x14(a4)=00000000  x22(s6)=00000000  x30(t5)=00000000
 x07(t2)=00000000  x15(a5)=00000000  x23(s7)=00000000  x31(t6)=00000000
 
-00000000: custom-0   raw=0x0800400b                # UNKNOWN  # not simulated: unimplemented op
+00000000: custom-0   raw=0x0800400b                # UNKNOWN  # halted: unimplemented op
 ```
 Simulation steps at the first instruction that is not implemented. Just set the pc and carry on:
 ```py
@@ -135,7 +135,7 @@ rv.step(10)
 00000b10: bne        a5, zero, .+8                 #  
 00000b14: jalr       zero, 0(ra)                   #  
 00000464: addi       ra, zero, 1000                # ra = 000003e8 
-00000468: custom-0   raw=0x0a00e00b                # UNKNOWN  # not simulated: unimplemented op
+00000468: custom-0   raw=0x0a00e00b                # UNKNOWN  # halted: unimplemented op
 ```
 
 ## Dev Setup
@@ -149,3 +149,8 @@ git clone https://github.com/riscv/riscv-opcodes.git
 cd riscv-opcodes; make
 ```
 The necessary opcode specs are also bundled in the PyPI package. If there is a `riscv-opcodes` in the current directory, tinyRV will try to use those instead of the packaged ones.
+
+## Related
+
+- [TinyFive](https://github.com/OpenMachine-ai/tinyfive)
+- [mini-rv32ima](https://github.com/cnlohr/mini-rv32ima)

@@ -114,6 +114,7 @@ class rvsim:  # simulates RV32I, RV64I and some additional instructions
         self.mem, self.xlen = mem, xlen
         self.pc, self.x, self.f, self.csr = 0, rvregs(), [0]*32, [0]*4096
         self.xlenmask = (1<<self.xlen)-1
+        self.u32mask = (1<<32)-1
         [setattr(self, n, i) for i, n in enumerate(iregs)]
         [setattr(self, n, a) for a, n in csrs.items()]
     def __repr__(self): return '\n'.join(['  '.join([f'x{r+rr:02d}({(iregs[r+rr])[-2:]})={xfmt(self.x[r+rr], self.xlen)}' for r in range(0, 32, 8)]) for rr in range(8)])
@@ -123,12 +124,13 @@ class rvsim:  # simulates RV32I, RV64I and some additional instructions
     def _auipc (self, rd, imm20,  **_): self.x[rd] = self.sext(self.pc+imm20); self.pc+=4
     def _lui   (self, rd, imm20,  **_): self.x[rd] = imm20; self.pc+=4
     def _jal   (self, rd, jimm20, **_): self.x[rd] = self.pc+4; self.pc = (self.pc+jimm20)&self.xlenmask
-    def _jalr  (self, rd, rs1, imm12, **_): self.x[rd] = self.pc+4; self.pc = (self.x[rs1]+imm12)&self.xlenmask
+    def _jalr  (self, rd, rs1, imm12, **_): self.x[rd], self.pc = self.pc+4, (self.x[rs1]+imm12)&self.xlenmask
     def _beq   (self, rs1, rs2, bimm12, **_): self.pc = (self.pc+bimm12) if self.x[rs1] == self.x[rs2] else self.pc+4
     def _bne   (self, rs1, rs2, bimm12, **_): self.pc = (self.pc+bimm12) if self.x[rs1] != self.x[rs2] else self.pc+4
+    def _blt   (self, rs1, rs2, bimm12, **_): self.pc = (self.pc+bimm12) if self.x[rs1] < self.x[rs2] else self.pc+4
     def _bge   (self, rs1, rs2, bimm12, **_): self.pc = (self.pc+bimm12) if self.x[rs1] >= self.x[rs2] else self.pc+4
     def _bltu  (self, rs1, rs2, bimm12, **_): self.pc = (self.pc+bimm12) if self.x[rs1]&self.xlenmask < self.x[rs2]&self.xlenmask else self.pc+4
-    def _bgeu  (self, rs1, rs2, bimm12, **_): self.pc = (self.pc+bimm12) if self.x[rs1]&self.xlenmask == self.x[rs2]&self.xlenmask else self.pc+4
+    def _bgeu  (self, rs1, rs2, bimm12, **_): self.pc = (self.pc+bimm12) if self.x[rs1]&self.xlenmask >= self.x[rs2]&self.xlenmask else self.pc+4
     def _sb    (self, rs1, rs2, imm12, **_): self.mem.s((self.x[rs1]+imm12)&self.xlenmask, self.x[rs2]&((1<<8)-1), 'B'); self.pc+=4
     def _sh    (self, rs1, rs2, imm12, **_): self.mem.s((self.x[rs1]+imm12)&self.xlenmask, self.x[rs2]&((1<<16)-1), 'H'); self.pc+=4
     def _sw    (self, rs1, rs2, imm12, **_): self.mem.s((self.x[rs1]+imm12)&self.xlenmask, self.x[rs2]&((1<<32)-1), 'I'); self.pc+=4
@@ -175,12 +177,13 @@ class rvsim:  # simulates RV32I, RV64I and some additional instructions
     def _csrrs (self, rd, csr, rs1,    **_): self.x[rd], self.csr[csr] = self.csr[csr], (self.csr[csr]|self.x[rs1]) if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4
     def _csrrc (self, rd, csr, rs1,    **_): self.x[rd], self.csr[csr] = self.csr[csr], (self.csr[csr]&~self.x[rs1]) if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4
     def _csrrw (self, rd, csr, rs1,    **_): self.x[rd], self.csr[csr] = self.csr[csr], self.x[rs1] if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4
+    def _mret  (self,                  **_): self.pc = self.csr[csrs_addrs['mepc']]
     def step(self, steps=1, bpts=set()):
         for _ in range(steps):
             self.op = next(rvdecoder(self.mem.l(self.pc, 'I'), base=self.pc))
             self.mem.trace = []
             if hasattr(self, '_'+self.op.name): getattr(self, '_'+self.op.name)(**self.op.args)
-            else: print(f'{xfmt(self.op.addr, self.xlen)}: {str(self.op):40} # {self.op.extension if self.op.valid() else "UNKNOWN"}  # not simulated: unimplemented op'); break
+            else: print(f'{xfmt(self.op.addr, self.xlen)}: {str(self.op):40} # {self.op.extension if self.op.valid() else "UNKNOWN"}  # halted: unimplemented op'); break
             fp = (self.op.name.startswith('f') or self.op.name.startswith('c.f')) and not self.op.name.startswith('fence')
             rdinfo = f'{fregs[self.op.rd] if fp else iregs[self.op.rd]} = {xfmt(self.f[self.op.rd] if fp else self.x[self.op.rd], self.xlen)}' if 'rd' in self.op.args and self.op.rd != 0 else ''
             print(f'{xfmt(self.op.addr, self.xlen)}: {str(self.op):40} # {rdinfo}', ' '.join(self.mem.trace))
