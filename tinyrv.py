@@ -80,7 +80,7 @@ def rvdecoder(*data, base=0):  # yields decoded ops.
 def xfmt(d, xlen): return f'{{:0{xlen//4}x}}'.format(d&((1<<xlen)-1))
 
 def rvprint(*data, base=0, xlen=64):  # prints listing of decoded instructions.
-    for op in rvdecoder(*data, base=base): print(f'{xfmt(op.addr,xlen)} {str(op):48} # {", ".join(op.extension) if op.valid() else "INVALID"}')
+    for op in rvdecoder(*data, base=base): print(f'{xfmt(op.addr,xlen)}: {str(op):40} # {", ".join(op.extension) if op.valid() else "INVALID"}')
 
 class rvmem:
     def __init__(self, xlen=64):
