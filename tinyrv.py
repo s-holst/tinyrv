@@ -1,28 +1,28 @@
 import os, re, csv, struct, array, collections, struct, yaml, importlib.resources, pathlib
 
 try:
-    base = pathlib.Path('.') if pathlib.Path('riscv-opcodes').exists() else importlib.resources.files('tinyrv') / 'tinyrv'
-    opcodes = yaml.safe_load(open(base / 'riscv-opcodes/instr_dict.yaml'))
+    base = pathlib.Path('.') if pathlib.Path('tinyrv-opcodes').exists() else importlib.resources.files('tinyrv')
+    opcodes = yaml.safe_load(open(base / 'tinyrv-opcodes/instr_dict.yaml'))
     for aname, op in opcodes.items(): op['name'] = aname
     mask_match = [(int(op['mask'], 16), int(op['match'], 16), op) for op in opcodes.values()]
     def dr(h,l): return list(range(h,l-1,-1))
-    arg_bits = dict((a, dr(int(h),int(l))) for a, h, l in csv.reader(open(base / 'riscv-opcodes/arg_lut.csv'), skipinitialspace=True))
-    for s in open(base / 'riscv-opcodes/constants.py').readlines():  # immediate scrambling from latex_mapping. Some better way?
+    arg_bits = dict((a, dr(int(h),int(l))) for a, h, l in csv.reader(open(base / 'tinyrv-opcodes/arg_lut.csv'), skipinitialspace=True))
+    for s in open(base / 'tinyrv-opcodes/constants.py').readlines():  # immediate scrambling from latex_mapping. Some better way?
         if m := re.match(r"latex_mapping\[['\"](.*?)['\"]\] = ['\"][^\[]*\[([^\]]*)\]['\"]", s):
             fbits = sum([(dr(*(int(i) for i in part.split(':'))) if ':' in part else [int(part)]) for part in m[2].split('$\\\\vert$')], [])
             locs = [-1] * (max(fbits)+1)
             for i, b in enumerate(fbits): locs[-b-1] = arg_bits[m[1]][i]
             arg_bits[m[1]] = [31] * (32-len(locs)) + locs if locs[0] == 31 else locs  # sign extension
-    csrs = dict((int(a, 16), n) for fn in ['riscv-opcodes/csrs.csv', 'riscv-opcodes/csrs32.csv'] for a, n in csv.reader(open(base / fn), skipinitialspace=True))
+    csrs = dict((int(a, 16), n) for fn in ['tinyrv-opcodes/csrs.csv', 'tinyrv-opcodes/csrs32.csv'] for a, n in csv.reader(open(base / fn), skipinitialspace=True))
     csrs_addrs = dict((n, a) for a, n in csrs.items())
     iregs = 'zero,ra,sp,gp,tp,t0,t1,t2,fp,s1,a0,a1,a2,a3,a4,a5,a6,a7,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,t3,t4,t5,t6'.split(',')
     fregs = 'ft0,ft1,ft2,ft3,ft4,ft5,ft6,ft7,fs0,fs1,fa0,fa1,fa2,fa3,fa4,fa5,fa6,fa7,fs2,fs3,fs4,fs5,fs6,fs7,fs8,fs9,fs10,fs11,ft8,ft9,ft10,ft11'.split(',')
     st = 'sb,sh,sw,sd'.split(','); ldst = 'lb,lh,lw,ld,lbu,lhu,lwu'.split(',') + st
     fence_flags = ',w,r,rw,o,ow,or,orw,i,iw,ir,irw,io,iow,ior,iorw'.split(',')
-    customs = {0b0001011: 'custom-0', 0b0101011: 'custom-1', 0b1011011: 'custom-2', 0b1111011: 'custom-3'}  # RISC-V spec ch. 34, table 70
+    customs = {0b0001011: 'custom0', 0b0101011: 'custom1', 0b1011011: 'custom2', 0b1111011: 'custom3'}  # RISC-V spec ch. 34, table 70
 except Exception as e: raise Exception("Unable to load RISC-V specs. Do:\n"
-                                       "git clone https://github.com/riscv/riscv-opcodes.git\n"
-                                       "cd riscv-opcodes; make")
+                                       "git clone https://github.com/riscv/riscv-opcodes.git tinyrv-opcodes\n"
+                                       "cd tinyrv-opcodes; make")
 
 class rvop:
     def __init__(self, **kwargs): [setattr(self, k, v) for k, v in kwargs.items()]
@@ -124,7 +124,7 @@ class rvsim:  # simulates RV32I, RV64I and some additional instructions
     def _auipc (self, rd, imm20,  **_): self.x[rd] = self.sext(self.pc+imm20); self.pc+=4
     def _lui   (self, rd, imm20,  **_): self.x[rd] = imm20; self.pc+=4
     def _jal   (self, rd, jimm20, **_): self.x[rd] = self.pc+4; self.pc = (self.pc+jimm20)&self.xlenmask
-    def _jalr  (self, rd, rs1, imm12, **_): self.x[rd], self.pc = self.pc+4, (self.x[rs1]+imm12)&self.xlenmask
+    def _jalr  (self, rd, rs1, imm12, **_): self.x[rd], self.pc = self.pc+4, (self.x[rs1]+imm12)&self.xlenmask&(-2)  # LSB=0
     def _beq   (self, rs1, rs2, bimm12, **_): self.pc = (self.pc+bimm12) if self.x[rs1] == self.x[rs2] else self.pc+4
     def _bne   (self, rs1, rs2, bimm12, **_): self.pc = (self.pc+bimm12) if self.x[rs1] != self.x[rs2] else self.pc+4
     def _blt   (self, rs1, rs2, bimm12, **_): self.pc = (self.pc+bimm12) if self.x[rs1] < self.x[rs2] else self.pc+4
@@ -153,12 +153,12 @@ class rvsim:  # simulates RV32I, RV64I and some additional instructions
     def _srai  (self, rd, rs1, shamtd, **_): self.x[rd] = self.sext(self.x[rs1] >> shamtd); self.pc+=4  # shared with RV64I
     def _add   (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.x[rs1] + self.x[rs2]); self.pc+=4
     def _sub   (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.x[rs1] - self.x[rs2]); self.pc+=4
-    def _sll   (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.x[rs1] << (self.x[rs2]&63)); self.pc+=4
+    def _sll   (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.x[rs1] << (self.x[rs2]&(self.xlen-1))); self.pc+=4
     def _slt   (self, rd, rs1, rs2,    **_): self.x[rd] = self.x[rs1] < self.x[rs2]; self.pc+=4
     def _sltu  (self, rd, rs1, rs2,    **_): self.x[rd] = (self.x[rs1]&self.xlenmask) < (self.x[rs2]&self.xlenmask); self.pc+=4
     def _xor   (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.x[rs1] ^ self.x[rs2]); self.pc+=4
-    def _srl   (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext((self.x[rs1]&self.xlenmask) >> (self.x[rs2]&63)); self.pc+=4
-    def _sra   (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.x[rs1] >> (self.x[rs2]&63)); self.pc+=4
+    def _srl   (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext((self.x[rs1]&self.xlenmask) >> (self.x[rs2]&(self.xlen-1))); self.pc+=4
+    def _sra   (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.x[rs1] >> (self.x[rs2]&(self.xlen-1))); self.pc+=4
     def _or    (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.x[rs1] | self.x[rs2]); self.pc+=4
     def _and   (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.x[rs1] & self.x[rs2]); self.pc+=4  # mostly RV32I until here
     def _addiw (self, rd, rs1, imm12,  **_): self.x[rd] = self.sext(self.x[rs1] + imm12, 32); self.pc+=4  # RV64I from here
@@ -173,6 +173,7 @@ class rvsim:  # simulates RV32I, RV64I and some additional instructions
     def _mul   (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.x[rs1] * self.x[rs2]); self.pc+=4  # RV32M
     def _mulw  (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.sext(self.x[rs1], 32) * self.sext(self.x[rs2], 32), 32); self.pc+=4  # RV64M
     def _fence (self,                  **_): self.pc+=4
+    def _fence_i(self,                 **_): self.pc+=4
     def _csrrwi(self, rd, csr, zimm,   **_): self.x[rd], self.csr[csr] = self.csr[csr], zimm if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4
     def _csrrs (self, rd, csr, rs1,    **_): self.x[rd], self.csr[csr] = self.csr[csr], (self.csr[csr]|self.x[rs1]) if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4
     def _csrrc (self, rd, csr, rs1,    **_): self.x[rd], self.csr[csr] = self.csr[csr], (self.csr[csr]&~self.x[rs1]) if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4

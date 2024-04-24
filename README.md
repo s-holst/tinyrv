@@ -145,10 +145,60 @@ No dependencies, except [pyyaml](https://pypi.org/project/PyYAML/).
 However, tinyRV needs to load opcode specs from [riscv-opcodes](https://github.com/riscv/riscv-opcodes).
 Do this:
 ```sh
-git clone https://github.com/riscv/riscv-opcodes.git
-cd riscv-opcodes; make
+git clone https://github.com/riscv/riscv-opcodes.git tinyrv-opcodes
+cd tinyrv-opcodes; make
 ```
-The necessary opcode specs are also bundled in the PyPI package. If there is a `riscv-opcodes` in the current directory, tinyRV will try to use those instead of the packaged ones.
+The necessary opcode specs are also bundled in the PyPI package. If there is a `tinyrv-opcodes` in the current directory, tinyRV will try to use those instead of the packaged ones.
+
+## Testing
+
+Need python (duh!) and [riscv-gnu-toolchain](https://github.com/riscv/riscv-gnu-toolchain). Tested on MacOS.
+
+Install [the RISC-V compatibility framework RISCOF](https://github.com/riscv-software-src/riscof):
+```sh
+pip3 install setuptools wheel
+git clone https://github.com/riscv/riscof.git
+cd riscof
+pip3 install -e .
+```
+
+Install the [Sail ISA specification language](https://github.com/rems-project/sail):
+```sh
+brew install opam zlib z3 pkg-config
+opam init
+opam switch create ocaml-base-compiler
+opam install sail
+eval $(opam config env)
+```
+
+Install the [RISCV Sail Model](https://github.com/riscv/sail-riscv):
+```sh
+git clone https://github.com/riscv/sail-riscv.git
+cd sail-riscv
+ARCH=RV32 make c_emulator/riscv_sim_RV32
+ARCH=RV64 make c_emulator/riscv_sim_RV64
+# copy / link c_emulator/riscv_sim_RV{32,64} into $PATH location
+```
+
+Optionally, install [Spike RISC-V ISA Simulator](https://github.com/riscv-software-src/riscv-isa-sim):
+```sh
+git clone https://github.com/riscv-software-src/riscv-isa-sim.git
+cd riscv-isa-sim
+mkdir build
+cd build
+../configure --prefix=/path/to/install  # /path/to/install/bin must be in $PATH
+make
+make install
+spike  # test
+```
+Then, run the tests:
+```sh
+cd tests
+riscof --verbose info arch-test --clone
+riscof validateyaml --config=config.ini
+riscof testlist --config=config.ini --suite=riscv-arch-test/riscv-test-suite/ --env=riscv-arch-test/riscv-test-suite/env
+riscof run --config=config.ini --suite=riscv-arch-test/riscv-test-suite/ --env=riscv-arch-test/riscv-test-suite/env
+```
 
 ## Related
 

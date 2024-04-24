@@ -1,6 +1,6 @@
 [project]
 name = "tinyrv"
-version = "0.0.2"
+version = "0.0.3"
 authors = [
   { name="Stefan Holst", email="mail@s-holst.de" },
 ]
@@ -25,22 +25,19 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.sdist]
 include = [
   "tinyrv.py",
-  "riscv-opcodes/instr_dict.yaml",
-  "riscv-opcodes/csrs.csv",
-  "riscv-opcodes/csrs32.csv",
-  "riscv-opcodes/arg_lut.csv",
-  "riscv-opcodes/constants.py",
+  "tinyrv-opcodes/instr_dict.yaml",
+  "tinyrv-opcodes/csrs.csv",
+  "tinyrv-opcodes/csrs32.csv",
+  "tinyrv-opcodes/arg_lut.csv",
+  "tinyrv-opcodes/constants.py",
 ]
 
 [tool.hatch.build.targets.wheel]
 include = [
   "tinyrv.py",
-  "riscv-opcodes/instr_dict.yaml",
-  "riscv-opcodes/csrs.csv",
-  "riscv-opcodes/csrs32.csv",
-  "riscv-opcodes/arg_lut.csv",
-  "riscv-opcodes/constants.py",
+  "tinyrv-opcodes/instr_dict.yaml",
+  "tinyrv-opcodes/csrs.csv",
+  "tinyrv-opcodes/csrs32.csv",
+  "tinyrv-opcodes/arg_lut.csv",
+  "tinyrv-opcodes/constants.py",
 ]
-
-[tool.hatch.build.targets.wheel.sources]
-"riscv-opcodes" = "tinyrv/riscv-opcodes"
