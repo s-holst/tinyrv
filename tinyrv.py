@@ -16,13 +16,14 @@ try:
     csrs = dict((int(a, 16), n) for fn in ['tinyrv-opcodes/csrs.csv', 'tinyrv-opcodes/csrs32.csv'] for a, n in csv.reader(open(base / fn), skipinitialspace=True))
     csrs_addrs = dict((n, a) for a, n in csrs.items())
     iregs = 'zero,ra,sp,gp,tp,t0,t1,t2,fp,s1,a0,a1,a2,a3,a4,a5,a6,a7,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,t3,t4,t5,t6'.split(',')
-    fregs = 'ft0,ft1,ft2,ft3,ft4,ft5,ft6,ft7,fs0,fs1,fa0,fa1,fa2,fa3,fa4,fa5,fa6,fa7,fs2,fs3,fs4,fs5,fs6,fs7,fs8,fs9,fs10,fs11,ft8,ft9,ft10,ft11'.split(',')
     st = 'sb,sh,sw,sd'.split(','); ldst = 'lb,lh,lw,ld,lbu,lhu,lwu'.split(',') + st
     fence_flags = ',w,r,rw,o,ow,or,orw,i,iw,ir,irw,io,iow,ior,iorw'.split(',')
     customs = {0b0001011: 'custom0', 0b0101011: 'custom1', 0b1011011: 'custom2', 0b1111011: 'custom3'}  # RISC-V spec ch. 34, table 70
 except Exception as e: raise Exception("Unable to load RISC-V specs. Do:\n"
                                        "git clone https://github.com/riscv/riscv-opcodes.git tinyrv-opcodes\n"
                                        "cd tinyrv-opcodes; make")
+
+def xfmt(d, xlen): return f'{{:0{xlen//4}x}}'.format(d&((1<<xlen)-1))
 
 class rvop:
     def __init__(self, **kwargs): [setattr(self, k, v) for k, v in kwargs.items()]
@@ -39,8 +40,8 @@ class rvop:
             elif k == 'rs1': args[2] = f"{self.args['imm12']}({iregs[v]})" if self.name in ldst + ['jalr'] else iregs[v]
             elif k == 'rs2': args[3] = iregs[v]
             elif k in ['imm12', 'zimm']: args.append(f'{v}' if self.name not in ldst + ['jalr'] else None)
-            elif k in ['jimm20', 'bimm12']: args.append(f'.{v:+d}')
-            elif k in ['imm20']: args.append(hex(v))
+            elif k in ['jimm20', 'bimm12']: args.append(xfmt(self.addr+v, 32))
+            elif k in ['imm20']: args.append(xfmt(v, 32))
             elif 'sham' in k: args.append(f'{v}')
             else: args.append(f'{k}={v}')  # fallback
         args = args[::-1] if self.name in st else args  # snowflake sb/sh/sw/sd arg order: <src>, <dst>
@@ -77,27 +78,25 @@ def rvdecoder(*data, base=0):  # yields decoded ops.
                 break
         yield o
 
-def xfmt(d, xlen): return f'{{:0{xlen//4}x}}'.format(d&((1<<xlen)-1))
-
 def rvprint(*data, base=0, xlen=64):  # prints listing of decoded instructions.
-    for op in rvdecoder(*data, base=base): print(f'{xfmt(op.addr,xlen)}: {str(op):40} # {", ".join(op.extension) if op.valid() else "INVALID"}')
+    for op in rvdecoder(*data, base=base): print(f'{xfmt(op.addr,32)}: {str(op):40} # {", ".join(op.extension) if op.valid() else "INVALID"}')
 
 class rvmem:
     def __init__(self, xlen=64):
         self.psize, self.pages, self.xlen = 2<<12, {}, xlen
         self.fmt_sizes = {'q': 8, 'Q': 8, 'i': 4, 'I': 4, 'h': 2, 'H': 2, 'b': 1, 'B': 1}
         self.trace = []
-    def load(self, file, base=0): [self.s(i+base, b, 'B') for i, b in enumerate(open(file, 'rb').read())]
+    def read(self, file, base=0): [self.store(i+base, b, 'B') for i, b in enumerate(open(file, 'rb').read())]
     def _page_pa(self, addr):
         pb, pa = addr&~(self.psize-1), addr&(self.psize-1)
         if pb not in self.pages: self.pages[pb] = bytearray(self.psize)
         return self.pages[pb], pa
-    def s(self, addr, data, fmt=None):
+    def store(self, addr, data, fmt=None):
         page, pa = self._page_pa(addr)
         fmt = fmt or ('i' if self.xlen==32 else 'q')
         page[pa:pa+self.fmt_sizes[fmt]] = struct.pack(fmt, data)
         self.trace.append(f'mem[{xfmt(addr, self.xlen)}] <- {xfmt(data, self.fmt_sizes[fmt]*8)}')
-    def l(self, addr, fmt=None):
+    def load(self, addr, fmt=None):
         page, pa = self._page_pa(addr)
         fmt = fmt or ('i' if self.xlen==32 else 'q')
         data = struct.unpack(fmt, page[pa:pa+self.fmt_sizes[fmt]])[0]
@@ -109,18 +108,22 @@ class rvregs:  # normal list, but ignore writes to x[0]
     def __getitem__(self, i): return self._x[i]
     def __setitem__(self, i, d): self._x[i] = d if i else 0
 
-class rvsim:  # simulates RV32I, RV64I and some additional instructions
+class rvsim:  # simulates RV32IZicsr_Zifencei, RV64IZicsr_Zifencei and some additional instructions
     def __init__(self, mem, xlen=64):
         self.mem, self.xlen = mem, xlen
         self.pc, self.x, self.f, self.csr = 0, rvregs(), [0]*32, [0]*4096
         self.xlenmask = (1<<self.xlen)-1
-        self.u32mask = (1<<32)-1
         [setattr(self, n, i) for i, n in enumerate(iregs)]
         [setattr(self, n, a) for a, n in csrs.items()]
     def __repr__(self): return '\n'.join(['  '.join([f'x{r+rr:02d}({(iregs[r+rr])[-2:]})={xfmt(self.x[r+rr], self.xlen)}' for r in range(0, 32, 8)]) for rr in range(8)])
+    def addop(self, _opfn): setattr(self, _opfn.__name__, _opfn.__get__(self, rvsim))
     def sext(self,v,l=None): l = l or self.xlen; return v|~((1<<l)-1) if v&(1<<(l-1)) else v&((1<<l)-1)
-    def newop(self, _opfn):
-        setattr(self, _opfn.__name__, _opfn.__get__(self, rvsim))
+    def checked_store(self, addr, rs2, fmt, mask, alignmask):
+        if addr&alignmask == 0: self.mem.store(addr&self.xlenmask, self.x[rs2]&mask, fmt); self.pc += 4
+        else: self.csr[self.mtval], self.csr[self.mepc], self.csr[self.mcause], self.pc = addr&self.xlenmask, self.pc, 6, self.csr[self.mtvec] & (~3) & self.xlenmask
+    def checked_load (self, rd, addr, fmt, alignmask):
+        if addr&alignmask == 0: self.x[rd] = self.mem.load(addr&self.xlenmask, fmt); self.pc += 4
+        else: self.csr[self.mtval], self.csr[self.mepc], self.csr[self.mcause], self.pc = addr&self.xlenmask, self.pc, 4, self.csr[self.mtvec] & (~3) & self.xlenmask
     def _auipc (self, rd, imm20,  **_): self.x[rd] = self.sext(self.pc+imm20); self.pc+=4
     def _lui   (self, rd, imm20,  **_): self.x[rd] = imm20; self.pc+=4
     def _jal   (self, rd, jimm20, **_): self.x[rd] = self.pc+4; self.pc = (self.pc+jimm20)&self.xlenmask
@@ -131,17 +134,17 @@ class rvsim:  # simulates RV32I, RV64I and some additional instructions
     def _bge   (self, rs1, rs2, bimm12, **_): self.pc = (self.pc+bimm12) if self.x[rs1] >= self.x[rs2] else self.pc+4
     def _bltu  (self, rs1, rs2, bimm12, **_): self.pc = (self.pc+bimm12) if self.x[rs1]&self.xlenmask < self.x[rs2]&self.xlenmask else self.pc+4
     def _bgeu  (self, rs1, rs2, bimm12, **_): self.pc = (self.pc+bimm12) if self.x[rs1]&self.xlenmask >= self.x[rs2]&self.xlenmask else self.pc+4
-    def _sb    (self, rs1, rs2, imm12, **_): self.mem.s((self.x[rs1]+imm12)&self.xlenmask, self.x[rs2]&((1<<8)-1), 'B'); self.pc+=4
-    def _sh    (self, rs1, rs2, imm12, **_): self.mem.s((self.x[rs1]+imm12)&self.xlenmask, self.x[rs2]&((1<<16)-1), 'H'); self.pc+=4
-    def _sw    (self, rs1, rs2, imm12, **_): self.mem.s((self.x[rs1]+imm12)&self.xlenmask, self.x[rs2]&((1<<32)-1), 'I'); self.pc+=4
-    def _sd    (self, rs1, rs2, imm12, **_): self.mem.s((self.x[rs1]+imm12)&self.xlenmask, self.x[rs2]&((1<<64)-1), 'Q'); self.pc+=4
-    def _lb    (self, rd, rs1, imm12,  **_): self.x[rd] = self.mem.l((self.x[rs1]+imm12)&self.xlenmask, 'b'); self.pc+=4
-    def _lh    (self, rd, rs1, imm12,  **_): self.x[rd] = self.mem.l((self.x[rs1]+imm12)&self.xlenmask, 'h'); self.pc+=4
-    def _lw    (self, rd, rs1, imm12,  **_): self.x[rd] = self.mem.l((self.x[rs1]+imm12)&self.xlenmask, 'i'); self.pc+=4
-    def _ld    (self, rd, rs1, imm12,  **_): self.x[rd] = self.mem.l((self.x[rs1]+imm12)&self.xlenmask, 'q'); self.pc+=4
-    def _lbu   (self, rd, rs1, imm12,  **_): self.x[rd] = self.mem.l((self.x[rs1]+imm12)&self.xlenmask, 'B'); self.pc+=4
-    def _lhu   (self, rd, rs1, imm12,  **_): self.x[rd] = self.mem.l((self.x[rs1]+imm12)&self.xlenmask, 'H'); self.pc+=4
-    def _lwu   (self, rd, rs1, imm12,  **_): self.x[rd] = self.mem.l((self.x[rs1]+imm12)&self.xlenmask, 'I'); self.pc+=4
+    def _sb    (self, rs1, rs2, imm12, **_): self.mem.store((self.x[rs1]+imm12)&self.xlenmask, self.x[rs2]&((1<<8)-1), 'B'); self.pc+=4
+    def _sh    (self, rs1, rs2, imm12, **_): self.checked_store((self.x[rs1]+imm12)&self.xlenmask, rs2, 'H', (1<<16)-1, 1)
+    def _sw    (self, rs1, rs2, imm12, **_): self.checked_store((self.x[rs1]+imm12)&self.xlenmask, rs2, 'I', (1<<32)-1, 3)
+    def _sd    (self, rs1, rs2, imm12, **_): self.checked_store((self.x[rs1]+imm12)&self.xlenmask, rs2, 'Q', (1<<64)-1, 7)
+    def _lb    (self, rd, rs1, imm12,  **_): self.x[rd] = self.mem.load((self.x[rs1]+imm12)&self.xlenmask, 'b'); self.pc+=4
+    def _lh    (self, rd, rs1, imm12,  **_): self.checked_load(rd, self.x[rs1]+imm12, 'h', 1)
+    def _lw    (self, rd, rs1, imm12,  **_): self.checked_load(rd, self.x[rs1]+imm12, 'i', 3)
+    def _ld    (self, rd, rs1, imm12,  **_): self.checked_load(rd, self.x[rs1]+imm12, 'q', 7)
+    def _lbu   (self, rd, rs1, imm12,  **_): self.x[rd] = self.mem.load((self.x[rs1]+imm12)&self.xlenmask, 'B'); self.pc+=4
+    def _lhu   (self, rd, rs1, imm12,  **_): self.checked_load(rd, self.x[rs1]+imm12, 'H', 1)
+    def _lwu   (self, rd, rs1, imm12,  **_): self.checked_load(rd, self.x[rs1]+imm12, 'I', 3)
     def _addi  (self, rd, rs1, imm12,  **_): self.x[rd] = self.sext(self.x[rs1] + imm12); self.pc+=4
     def _slti  (self, rd, rs1, imm12,  **_): self.x[rd] = self.x[rs1] < imm12; self.pc+=4
     def _sltiu (self, rd, rs1, imm12,  **_): self.x[rd] = (self.x[rs1]&self.xlenmask) < (self.sext(imm12, 32)&self.xlenmask); self.pc+=4
@@ -163,12 +166,12 @@ class rvsim:  # simulates RV32I, RV64I and some additional instructions
     def _and   (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.x[rs1] & self.x[rs2]); self.pc+=4  # mostly RV32I until here
     def _addiw (self, rd, rs1, imm12,  **_): self.x[rd] = self.sext(self.x[rs1] + imm12, 32); self.pc+=4  # RV64I from here
     def _slliw (self, rd, rs1, shamtw, **_): self.x[rd] = self.sext(self.x[rs1] << shamtw, 32); self.pc+=4
-    def _srliw (self, rd, rs1, shamtw, **_): self.x[rd] = self.sext((self.x[rs1]&self.u32mask) >> shamtw, 32); self.pc+=4
+    def _srliw (self, rd, rs1, shamtw, **_): self.x[rd] = self.sext((self.x[rs1]&((1<<32)-1)) >> shamtw, 32); self.pc+=4
     def _sraiw (self, rd, rs1, shamtw, **_): self.x[rd] = self.sext(self.sext(self.x[rs1], 32) >> shamtw, 32); self.pc+=4
     def _addw  (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.sext(self.x[rs1], 32) + self.sext(self.x[rs2], 32), 32); self.pc+=4
     def _subw  (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.sext(self.x[rs1], 32) - self.sext(self.x[rs2], 32), 32); self.pc+=4
     def _sllw  (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.sext(self.x[rs1], 32) << (self.x[rs2]&31), 32); self.pc+=4
-    def _srlw  (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext((self.x[rs1]&self.u32mask) >> (self.x[rs2]&31), 32); self.pc+=4
+    def _srlw  (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext((self.x[rs1]&((1<<32)-1)) >> (self.x[rs2]&31), 32); self.pc+=4
     def _sraw  (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.sext(self.x[rs1], 32) >> (self.x[rs2]&31), 32); self.pc+=4
     def _mul   (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.x[rs1] * self.x[rs2]); self.pc+=4  # RV32M
     def _mulw  (self, rd, rs1, rs2,    **_): self.x[rd] = self.sext(self.sext(self.x[rs1], 32) * self.sext(self.x[rs2], 32), 32); self.pc+=4  # RV64M
@@ -178,15 +181,17 @@ class rvsim:  # simulates RV32I, RV64I and some additional instructions
     def _csrrs (self, rd, csr, rs1,    **_): self.x[rd], self.csr[csr] = self.csr[csr], (self.csr[csr]|self.x[rs1]) if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4
     def _csrrc (self, rd, csr, rs1,    **_): self.x[rd], self.csr[csr] = self.csr[csr], (self.csr[csr]&~self.x[rs1]) if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4
     def _csrrw (self, rd, csr, rs1,    **_): self.x[rd], self.csr[csr] = self.csr[csr], self.x[rs1] if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4
-    def _mret  (self,                  **_): self.pc = self.csr[csrs_addrs['mepc']]
+    def _mret  (self,                  **_): self.pc = self.csr[self.mepc] & self.xlenmask
+    def _ecall (self,                  **_):                                 self.csr[self.mepc] = self.pc; self.csr[self.mcause] = 11; self.pc = self.csr[self.mtvec] & (~3) & self.xlenmask
+    def _ebreak(self,                  **_): self.csr[self.mtval] = self.pc; self.csr[self.mepc] = self.pc; self.csr[self.mcause] = 3;  self.pc = self.csr[self.mtvec] & (~3) & self.xlenmask
+    def _c_addi(self, rd_rs1, nzimm6,  **_): self.x[rd_rs1] += nzimm6; self.pc+=2  # needed for c.nop in test rv32i_m/privilege/src/misalign-jal-01.S
     def step(self, steps=1, bpts=set()):
         for _ in range(steps):
-            self.op = next(rvdecoder(self.mem.l(self.pc, 'I'), base=self.pc))
+            self.op = next(rvdecoder(self.mem.load(self.pc, 'I'), base=self.pc))
             self.mem.trace = []
-            if hasattr(self, '_'+self.op.name): getattr(self, '_'+self.op.name)(**self.op.args)
+            if hasattr(self, '_'+self.op.name): getattr(self, '_'+self.op.name)(**self.op.args)  # dispatch instruction
             else: print(f'{xfmt(self.op.addr, self.xlen)}: {str(self.op):40} # {self.op.extension if self.op.valid() else "UNKNOWN"}  # halted: unimplemented op'); break
-            fp = (self.op.name.startswith('f') or self.op.name.startswith('c.f')) and not self.op.name.startswith('fence')
-            rdinfo = f'{fregs[self.op.rd] if fp else iregs[self.op.rd]} = {xfmt(self.f[self.op.rd] if fp else self.x[self.op.rd], self.xlen)}' if 'rd' in self.op.args and self.op.rd != 0 else ''
+            rdinfo = f'{iregs[self.op.rd]} = {xfmt(self.x[self.op.rd], self.xlen)}' if 'rd' in self.op.args and self.op.rd != 0 else ''
             print(f'{xfmt(self.op.addr, self.xlen)}: {str(self.op):40} # {rdinfo}', ' '.join(self.mem.trace))
             if self.pc-self.op.addr not in (2, 4): print()
             if self.op.addr in bpts|{self.pc}: break

@@ -8,7 +8,7 @@ logger = logging.getLogger()
 
 class tinyrv(pluginTemplate):
     __model__ = "tinyrv"
-    __version__ = "0.0.2"
+    __version__ = "0.0.3"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -51,7 +51,7 @@ class tinyrv(pluginTemplate):
           compile_macros= ' -D' + " -D".join(testentry['macros'])
           cmd = self.compile_cmd.format(testentry['isa'].lower(), self.xlen, test, elf, compile_macros)
           if self.target_run:
-            simcmd = self.dut_exe
+            simcmd = self.dut_exe + (' 64' if '64' in testentry['isa'] else ' 32')
           else:
             simcmd = 'echo "NO RUN"'
 

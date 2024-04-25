@@ -3,7 +3,8 @@
 A RISC-V instruction decoder and emulator in less than 200 lines of pure python3.
 
 - Uses official RISC-V specs to decode *every* specified RISC-V instruction.
-- Emulates at least the base ISAs RV32I/RV64I and is easily extendable.
+- Emulates at least the base ISAs and is easily extendable.
+- RV32IZicsr_Zifencei and RV64IZicsr_Zifencei compliance validated using RISCOF (see Testing below).
 
 ## Getting Started
 
@@ -18,19 +19,19 @@ rvprint('firmware.bin', xlen=32)  # xlen just for output formatting
 ```
 Outputs for `firmware.bin` from [picorv32](https://github.com/YosysHQ/picorv32/tree/main):
 ```
-00000000: custom-0   raw=0x0800400b                # INVALID
-00000004: custom-0   raw=0x0600600b                # INVALID
-00000008: jal        zero, .+984                   # rv_i
+00000000: custom0    raw=0x0800400b                # INVALID
+00000004: custom0    raw=0x0600600b                # INVALID
+00000008: jal        zero, 000003e0                # rv_i
 0000000c: addi       zero, zero, 0                 # rv_i
-00000010: custom-0   raw=0x0200a10b                # INVALID
-00000014: custom-0   raw=0x0201218b                # INVALID
-00000018: lui        ra, 0x0                       # rv_i
+00000010: custom0    raw=0x0200a10b                # INVALID
+00000014: custom0    raw=0x0201218b                # INVALID
+00000018: lui        ra, 00000000                  # rv_i
 0000001c: addi       ra, ra, 352                   # rv_i
-00000020: custom-0   raw=0x0000410b                # INVALID
+00000020: custom0    raw=0x0000410b                # INVALID
 00000024: sw         sp, 0(ra)                     # rv_i
-00000028: custom-0   raw=0x0001410b                # INVALID
+00000028: custom0    raw=0x0001410b                # INVALID
 0000002c: sw         sp, 4(ra)                     # rv_i
-00000030: custom-0   raw=0x0001c10b                # INVALID
+00000030: custom0    raw=0x0001c10b                # INVALID
 00000034: sw         sp, 8(ra)                     # rv_i
 00000038: sw         gp, 12(ra)                    # rv_i
 0000003c: sw         tp, 16(ra)                    # rv_i
@@ -195,8 +196,6 @@ Then, run the tests:
 ```sh
 cd tests
 riscof --verbose info arch-test --clone
-riscof validateyaml --config=config.ini
-riscof testlist --config=config.ini --suite=riscv-arch-test/riscv-test-suite/ --env=riscv-arch-test/riscv-test-suite/env
 riscof run --config=config.ini --suite=riscv-arch-test/riscv-test-suite/ --env=riscv-arch-test/riscv-test-suite/env
 ```
 
