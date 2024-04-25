@@ -146,10 +146,10 @@ No dependencies, except [pyyaml](https://pypi.org/project/PyYAML/).
 However, tinyRV needs to load opcode specs from [riscv-opcodes](https://github.com/riscv/riscv-opcodes).
 Do this:
 ```sh
-git clone https://github.com/riscv/riscv-opcodes.git tinyrv-opcodes
-cd tinyrv-opcodes; make
+git clone https://github.com/riscv/riscv-opcodes.git tinyrv_opcodes
+cd tinyrv_opcodes; make
 ```
-The necessary opcode specs are also bundled in the PyPI package. If there is a `tinyrv-opcodes` in the current directory, tinyRV will try to use those instead of the packaged ones.
+The necessary opcode specs are also bundled in the PyPI package. If there is a `tinyrv_opcodes` in the current directory, tinyRV will try to use those instead of the packaged ones.
 
 ## Testing
 

@@ -1,27 +1,27 @@
 import os, re, csv, struct, array, collections, struct, yaml, importlib.resources, pathlib
 
 try:
-    base = pathlib.Path('.') if pathlib.Path('tinyrv-opcodes').exists() else importlib.resources.files('tinyrv')
-    opcodes = yaml.safe_load(open(base / 'tinyrv-opcodes/instr_dict.yaml'))
+    base = pathlib.Path('.') if pathlib.Path('tinyrv_opcodes').exists() else importlib.resources.files('tinyrv')
+    opcodes = yaml.safe_load(open(base / 'tinyrv_opcodes/instr_dict.yaml'))
     for aname, op in opcodes.items(): op['name'] = aname
     mask_match = [(int(op['mask'], 16), int(op['match'], 16), op) for op in opcodes.values()]
     def dr(h,l): return list(range(h,l-1,-1))
-    arg_bits = dict((a, dr(int(h),int(l))) for a, h, l in csv.reader(open(base / 'tinyrv-opcodes/arg_lut.csv'), skipinitialspace=True))
-    for s in open(base / 'tinyrv-opcodes/constants.py').readlines():  # immediate scrambling from latex_mapping. Some better way?
+    arg_bits = dict((a, dr(int(h),int(l))) for a, h, l in csv.reader(open(base / 'tinyrv_opcodes/arg_lut.csv'), skipinitialspace=True))
+    for s in open(base / 'tinyrv_opcodes/constants.py').readlines():  # immediate scrambling from latex_mapping. Some better way?
         if m := re.match(r"latex_mapping\[['\"](.*?)['\"]\] = ['\"][^\[]*\[([^\]]*)\]['\"]", s):
             fbits = sum([(dr(*(int(i) for i in part.split(':'))) if ':' in part else [int(part)]) for part in m[2].split('$\\\\vert$')], [])
             locs = [-1] * (max(fbits)+1)
             for i, b in enumerate(fbits): locs[-b-1] = arg_bits[m[1]][i]
             arg_bits[m[1]] = [31] * (32-len(locs)) + locs if locs[0] == 31 else locs  # sign extension
-    csrs = dict((int(a, 16), n) for fn in ['tinyrv-opcodes/csrs.csv', 'tinyrv-opcodes/csrs32.csv'] for a, n in csv.reader(open(base / fn), skipinitialspace=True))
+    csrs = dict((int(a, 16), n) for fn in ['tinyrv_opcodes/csrs.csv', 'tinyrv_opcodes/csrs32.csv'] for a, n in csv.reader(open(base / fn), skipinitialspace=True))
     csrs_addrs = dict((n, a) for a, n in csrs.items())
     iregs = 'zero,ra,sp,gp,tp,t0,t1,t2,fp,s1,a0,a1,a2,a3,a4,a5,a6,a7,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,t3,t4,t5,t6'.split(',')
     st = 'sb,sh,sw,sd'.split(','); ldst = 'lb,lh,lw,ld,lbu,lhu,lwu'.split(',') + st
     fence_flags = ',w,r,rw,o,ow,or,orw,i,iw,ir,irw,io,iow,ior,iorw'.split(',')
     customs = {0b0001011: 'custom0', 0b0101011: 'custom1', 0b1011011: 'custom2', 0b1111011: 'custom3'}  # RISC-V spec ch. 34, table 70
 except Exception as e: raise Exception("Unable to load RISC-V specs. Do:\n"
-                                       "git clone https://github.com/riscv/riscv-opcodes.git tinyrv-opcodes\n"
-                                       "cd tinyrv-opcodes; make")
+                                       "git clone https://github.com/riscv/riscv-opcodes.git tinyrv_opcodes\n"
+                                       "cd tinyrv_opcodes; make")
 
 def xfmt(d, xlen): return f'{{:0{xlen//4}x}}'.format(d&((1<<xlen)-1))
 
