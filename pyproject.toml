@@ -4,7 +4,7 @@ version = "0.0.3"
 authors = [
   { name="Stefan Holst", email="mail@s-holst.de" },
 ]
-description = "A tiny RISC-V instruction decoder and emulator"
+description = "A tiny RISC-V instruction set simulator"
 readme = "README.md"
 requires-python = ">=3.8"
 requires = ["pyyaml"]

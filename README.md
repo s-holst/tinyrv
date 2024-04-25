@@ -1,6 +1,6 @@
 # tinyRV
 
-A RISC-V instruction decoder and emulator in less than 200 lines of pure python3.
+A RISC-V instruction decoder and instruction set simulator in less than 200 lines of python.
 
 - Uses official RISC-V specs to decode *every* specified RISC-V instruction.
 - Emulates at least the base ISAs and is easily extendable.
@@ -87,7 +87,7 @@ x07(t2)=00000000  x15(a5)=00000000  x23(s7)=00000000  x31(t6)=00000000
 
 00000000: custom-0   raw=0x0800400b                # UNKNOWN  # halted: unimplemented op
 ```
-Simulation steps at the first instruction that is not implemented. Just set the pc and carry on:
+Simulation halts at the first instruction that is not implemented. Just set the pc and carry on:
 ```py
 rv.pc = 8
 rv.step(50)
