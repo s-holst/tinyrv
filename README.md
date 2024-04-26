@@ -19,19 +19,19 @@ rvprint('firmware.bin', xlen=32)  # xlen just for output formatting
 ```
 Outputs for `firmware.bin` from [picorv32](https://github.com/YosysHQ/picorv32/tree/main):
 ```
-00000000: custom0    raw=0x0800400b                # INVALID
-00000004: custom0    raw=0x0600600b                # INVALID
-00000008: jal        zero, 000003e0                # rv_i
+00000000: custom0                                  # INVALID data=0x800400b
+00000004: custom0                                  # INVALID data=0x600600b
+00000008: jal        zero, 0x3e0                   # rv_i
 0000000c: addi       zero, zero, 0                 # rv_i
-00000010: custom0    raw=0x0200a10b                # INVALID
-00000014: custom0    raw=0x0201218b                # INVALID
-00000018: lui        ra, 00000000                  # rv_i
-0000001c: addi       ra, ra, 352                   # rv_i
-00000020: custom0    raw=0x0000410b                # INVALID
+00000010: custom0                                  # INVALID data=0x200a10b
+00000014: custom0                                  # INVALID data=0x201218b
+00000018: lui        ra, 0                         # rv_i
+0000001c: addi       ra, ra, 0x160                 # rv_i
+00000020: custom0                                  # INVALID data=0x410b
 00000024: sw         sp, 0(ra)                     # rv_i
-00000028: custom0    raw=0x0001410b                # INVALID
+00000028: custom0                                  # INVALID data=0x1410b
 0000002c: sw         sp, 4(ra)                     # rv_i
-00000030: custom0    raw=0x0001c10b                # INVALID
+00000030: custom0                                  # INVALID data=0x1c10b
 00000034: sw         sp, 8(ra)                     # rv_i
 00000038: sw         gp, 12(ra)                    # rv_i
 0000003c: sw         tp, 16(ra)                    # rv_i
@@ -72,7 +72,7 @@ mem.load('firmware.bin', base=0)
 rv = rvsim(mem, xlen=32)  # xlen affects overflows, sign extensions
 print(rv)  # print registers
 print()
-rv.step(10)  # simulate up to 10 instructions
+rv.run(10)  # simulate up to 10 instructions
 ```
 Outputs:
 ```
@@ -85,58 +85,69 @@ x05(t0)=00000000  x13(a3)=00000000  x21(s5)=00000000  x29(t4)=00000000
 x06(t1)=00000000  x14(a4)=00000000  x22(s6)=00000000  x30(t5)=00000000
 x07(t2)=00000000  x15(a5)=00000000  x23(s7)=00000000  x31(t6)=00000000
 
-00000000: custom-0   raw=0x0800400b                # UNKNOWN  # halted: unimplemented op
+vvvvvvvv: unknown opcode: 0800400b
+00000000: custom0                                  #
 ```
 Simulation halts at the first instruction that is not implemented. Just set the pc and carry on:
 ```py
 rv.pc = 8
-rv.step(50)
+rv.run(50)
 ```
 ```
-00000008: jal        zero, .+984                   #  
+00000008: jal        zero, 0x3e0                   # 
 
-000003e0: addi       ra, zero, 0                   # ra = 00000000 
-000003e4: addi       sp, zero, 0                   # sp = 00000000 
+000003e0: addi       ra, zero, 0                   # 
+000003e4: addi       sp, zero, 0                   # 
 (... boring initialization stuff skipped ...)
-00000454: addi       t5, zero, 0                   # t5 = 00000000 
-00000458: addi       t6, zero, 0                   # t6 = 00000000 
-0000045c: lui        sp, 0x20000                   # sp = 00020000 
-00000460: jal        ra, .+1916                    # ra = 00000464 
+00000454: addi       t5, zero, 0                   # 
+00000458: addi       t6, zero, 0                   # 
+0000045c: lui        sp, 0x20000                   # sp=00020000
+00000460: jal        ra, 0xbdc                     # ra=00000464
 
-00000bdc: lui        a0, 0xc000                    # a0 = 0000c000 
-00000be0: addi       a0, a0, 1948                  # a0 = 0000c79c 
-00000be4: jal        zero, .-220                   #  
+00000bdc: lui        a0, 0xc000                    # a0=0000c000
+00000be0: addi       a0, a0, 0x79c                 # a0=0000c79c
+00000be4: jal        zero, 0xb08                   # 
 
-00000b08: lui        a4, 0x10000000                # a4 = 10000000 
-00000b0c: lbu        a5, 0(a0)                     # a5 = 00000068 mem[0000c79c] -> 68
-00000b10: bne        a5, zero, .+8                 #  
+00000b08: lui        a4, 0x10000000                # a4=10000000
+00000b0c: lbu        a5, 0(a0)                     # mem[0000c79c]->68 a5=00000068
+00000b10: bne        a5, zero, 0xb18               # 
 
-00000b18: addi       a0, a0, 1                     # a0 = 0000c79d 
-00000b1c: sw         a5, 0(a4)                     #  mem[10000000] <- 00000068
-00000b20: jal        zero, .-20                    #  
+00000b18: addi       a0, a0, 1                     # a0=0000c79d
+00000b1c: sw         a5, 0(a4)                     # 00000068->mem[10000000]
+00000b20: jal        zero, 0xb0c                   # 
 
-00000b0c: lbu        a5, 0(a0)                     # a5 = 00000065 mem[0000c79d] -> 65
-00000b10: bne        a5, zero, .+8                 #
+00000b0c: lbu        a5, 0(a0)                     # mem[0000c79d]->65 a5=00000065
+00000b10: bne        a5, zero, 0xb18               # 
+
+00000b18: addi       a0, a0, 1                     # a0=0000c79e
+00000b1c: sw         a5, 0(a4)                     # 00000065->mem[10000000]
+00000b20: jal        zero, 0xb0c                   # 
+
+00000b0c: lbu        a5, 0(a0)                     # mem[0000c79e]->6c a5=0000006c
+00000b10: bne        a5, zero, 0xb18               # 
 ```
 Each jump, taken branch produces a newline, right-hand side has register changes and memory transactions. `rvmem` is paged. Memory is allocated on demand and persists. Now let's get past this loop by setting a breakpoint:
 ```py
-rv.step(1000, bpts={0xb14})
-rv.step(10)
+rv.run(1000, bpts={0xb14})
+rv.run(10)
 ```
 ```
 ...
-00000b0c: lbu        a5, 0(a0)                     # a5 = 0000000a mem[0000c7a7] -> 0a
-00000b10: bne        a5, zero, .+8                 #  
+00000b0c: lbu        a5, 0(a0)                     # mem[0000c7a7]->0a a5=0000000a
+00000b10: bne        a5, zero, 0xb18               # 
 
-00000b18: addi       a0, a0, 1                     # a0 = 0000c7a8 
-00000b1c: sw         a5, 0(a4)                     #  mem[10000000] <- 0000000a
-00000b20: jal        zero, .-20                    #  
+00000b18: addi       a0, a0, 1                     # a0=0000c7a8
+00000b1c: sw         a5, 0(a4)                     # 0000000a->mem[10000000]
+00000b20: jal        zero, 0xb0c                   # 
 
-00000b0c: lbu        a5, 0(a0)                     # a5 = 00000000 mem[0000c7a8] -> 00
-00000b10: bne        a5, zero, .+8                 #  
-00000b14: jalr       zero, 0(ra)                   #  
-00000464: addi       ra, zero, 1000                # ra = 000003e8 
-00000468: custom-0   raw=0x0a00e00b                # UNKNOWN  # halted: unimplemented op
+00000b0c: lbu        a5, 0(a0)                     # mem[0000c7a8]->00 a5=00000000
+00000b10: bne        a5, zero, 0xb18               # 
+00000b14: jalr       zero, 0(ra)                   # 
+
+00000464: addi       ra, zero, 0x3e8               # ra=000003e8
+
+vvvvvvvv: unknown opcode: 0a00e00b
+00000468: custom0                                  #
 ```
 
 ## Dev Setup
@@ -153,7 +164,7 @@ The necessary opcode specs are also bundled in the PyPI package. If there is a `
 
 ## Testing
 
-Need python (duh!) and [riscv-gnu-toolchain](https://github.com/riscv/riscv-gnu-toolchain). Tested on MacOS.
+Install [riscv-gnu-toolchain](https://github.com/riscv/riscv-gnu-toolchain) or [homebrew-riscv](https://github.com/riscv-software-src/homebrew-riscv) (for MacOS).
 
 Install [the RISC-V compatibility framework RISCOF](https://github.com/riscv-software-src/riscof):
 ```sh

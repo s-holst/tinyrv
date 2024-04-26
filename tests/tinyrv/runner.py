@@ -12,7 +12,7 @@ mem = rvmem(xlen=xlen)  # xlen just for output formatting
 mem.read('my.bin', base=syms['.text.init'])
 rv = rvsim(mem, xlen=xlen)
 rv.pc = syms['.text.init']
-rv.step(40000, bpts={syms['rvtest_code_end']})
+rv.run(16000, bpts={syms['rvtest_code_end']})
 
 with open('DUT-tinyrv.signature', 'w') as f:
     for addr in range(syms['begin_signature'], syms['end_signature'], 4):
