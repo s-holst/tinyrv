@@ -1,4 +1,4 @@
-import os, re, csv, struct, array, struct, yaml, pathlib, importlib.resources
+import os, re, csv, struct, array, struct, yaml, pathlib, importlib.resources, functools
 
 try:
     base = pathlib.Path('.') if pathlib.Path('tinyrv_opcodes').exists() else importlib.resources.files('tinyrv')
@@ -48,8 +48,7 @@ class rvop:
     def valid(self): return min([not('nz' in k or 'n0' in k) or v!=0 for k, v in self.args.items()] + [hasattr(self, 'extension')])
     def __repr__(self): return f'{self.name.replace("_","."):10} {self.arg_str()}'
 
-def rvsplitter(*data, base=0):  # yields addresses and 32-bit/16-bit(compressed) RISC-V instruction words.
-    lower16 = 0
+def rvsplitter(*data, base=0, lower16=0):  # yields addresses and 32-bit/16-bit(compressed) RISC-V instruction words.
     for addr, instr in enumerate(struct.iter_unpack('<H', open(data[0],'rb').read() if isinstance(data[0],str) and os.path.isfile(data[0]) else array.array('I',[int(d,16) if isinstance(d,str) else d for d in (data[0] if hasattr(data[0], '__iter__') and not isinstance(data[0],str) else data)]))):
         if lower16: yield int(base)+(addr-1)*2, (instr[0]<<16)|lower16; lower16 = 0
         elif instr[0]&3 == 3: lower16 = instr[0]  # Two LSBs set: 32-bit instruction
@@ -62,8 +61,7 @@ def rvdecoder(*data, base=0):  # yields decoded ops.
         for mask, match, op in mask_match:
             if instr&mask == match:
                 for vf in op['variable_fields']:
-                    value = 0
-                    for bit in arg_bits[vf]: value = (value << 1) | ((instr>>bit)&1 if bit>=0 else 0)
+                    value = functools.reduce(int.__or__, [((instr>>bit)&1 if bit>=0 else 0) << pos for pos, bit in enumerate(arg_bits[vf][::-1])])
                     vf = vf.replace('hi','').replace('lo','').replace('c_','')
                     o.args[vf] = o.args.get(vf, 0) | sext(32, value)
                     if '_p' in vf: o.args[vf.replace('_p','')] = o.args[vf]+8  # reg aliases for some compressed instructions
@@ -98,11 +96,10 @@ class rvregs:
     def __init__(self, xlen): self._x, self.xlen = [0]*32, xlen
     def __getitem__(self, i): return self._x[i]
     def __setitem__(self, i, d):
-        if i==0: return
-        if d != self._x[i]: trace.append(f'{iregs[i]}=' + (f'{zext(self.xlen, d):08x}' if d>>32 in (0, -1) else f'{zext(self.xlen, d):016x}'))
-        self._x[i] = d
+        if i!=0 and d!=self._x[i]: trace.append(f'{iregs[i]}=' + (f'{zext(self.xlen, d):08x}' if d>>32 in (0, -1) else f'{zext(self.xlen, d):016x}'))
+        if i!=0: self._x[i] = d
 
-class rvsim:  # simulates RV32IZicsr_Zifencei, RV64IZicsr_Zifencei and some additional instructions
+class rvsim:  # simulates RV32IMZicsr_Zifencei, RV64IMZicsr_Zifencei
     def __init__(self, mem, xlen=64, allow_unaligned=False):
         self.mem, self.xlen, self.allow_unaligned = mem, xlen, allow_unaligned
         self.pc, self.x, self.f, self.csr = 0, rvregs(xlen), [0]*32, [0]*4096
@@ -117,6 +114,8 @@ class rvsim:  # simulates RV32IZicsr_Zifencei, RV64IZicsr_Zifencei and some addi
     def checked_load (self, rd, addr, fmt, alignmask):
         if addr&alignmask != 0 and not self.allow_unaligned: self.mtrap(addr, 4)
         else: self.x[rd] = self.mem.load(zext(self.xlen,addr), fmt); self.pc += 4
+    def idiv2zero(self, a, b): return -(-a // b) if (a < 0) ^ (b < 0) else a // b
+    def rem2zero(self, a, b): return a - b * self.idiv2zero(a, b)
     def _auipc (self, rd, imm20,  **_): self.x[rd] = sext(self.xlen, self.pc+imm20); self.pc+=4
     def _lui   (self, rd, imm20,  **_): self.x[rd] = imm20; self.pc+=4
     def _jal   (self, rd, jimm20, **_): self.x[rd] = self.pc+4; self.pc = zext(self.xlen, self.pc+jimm20)
@@ -166,18 +165,29 @@ class rvsim:  # simulates RV32IZicsr_Zifencei, RV64IZicsr_Zifencei and some addi
     def _sllw  (self, rd, rs1, rs2,    **_): self.x[rd] = sext(32, sext(32, self.x[rs1]) << (self.x[rs2]&31)); self.pc+=4
     def _srlw  (self, rd, rs1, rs2,    **_): self.x[rd] = sext(32, (self.x[rs1]&((1<<32)-1)) >> (self.x[rs2]&31)); self.pc+=4
     def _sraw  (self, rd, rs1, rs2,    **_): self.x[rd] = sext(32, sext(32, self.x[rs1]) >> (self.x[rs2]&31)); self.pc+=4
-    def _mul   (self, rd, rs1, rs2,    **_): self.x[rd] = sext(self.xlen, self.x[rs1] * self.x[rs2]); self.pc+=4  # RV32M
-    def _mulw  (self, rd, rs1, rs2,    **_): self.x[rd] = sext(32, sext(32, self.x[rs1]) * sext(32, self.x[rs2])); self.pc+=4  # RV64M
     def _fence (self,                  **_): self.pc+=4
     def _fence_i(self,                 **_): self.pc+=4
     def _csrrwi(self, rd, csr, zimm,   **_): self.x[rd], self.csr[csr] = self.csr[csr], zimm if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4
-    def _csrrs (self, rd, csr, rs1,    **_): self.x[rd], self.csr[csr] = self.csr[csr], (self.csr[csr]|self.x[rs1]) if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4
+    def _csrrs (self, rd, csr, rs1,    **_): self.x[rd], self.csr[csr] = self.csr[csr], (self.csr[csr]| self.x[rs1]) if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4
     def _csrrc (self, rd, csr, rs1,    **_): self.x[rd], self.csr[csr] = self.csr[csr], (self.csr[csr]&~self.x[rs1]) if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4
     def _csrrw (self, rd, csr, rs1,    **_): self.x[rd], self.csr[csr] = self.csr[csr], self.x[rs1] if (csr&0xc00)!=0xc00 else self.csr[csr]; self.pc+=4
     def _mret  (self,                  **_): self.pc = zext(self.xlen, self.csr[self.mepc])
     def _ecall (self,                  **_):                                 self.csr[self.mepc] = self.pc; self.csr[self.mcause] = 11; self.pc = zext(self.xlen, self.csr[self.mtvec]&(~3))
     def _ebreak(self,                  **_): self.csr[self.mtval] = self.pc; self.csr[self.mepc] = self.pc; self.csr[self.mcause] = 3;  self.pc = zext(self.xlen, self.csr[self.mtvec]&(~3))
-    def _c_addi(self, rd_rs1, nzimm6,  **_): self.x[rd_rs1] += nzimm6; self.pc+=2  # needed for c.nop in test rv32i_m/privilege/src/misalign-jal-01.S
+    def _mul   (self, rd, rs1, rs2,    **_): self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )           ); self.pc+=4  # RV32M
+    def _mulh  (self, rd, rs1, rs2,    **_): self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )>>self.xlen); self.pc+=4  # RV32M
+    def _mulhu (self, rd, rs1, rs2,    **_): self.x[rd] = sext(self.xlen, (zext(self.xlen, self.x[rs1]) * zext(self.xlen, self.x[rs2]))>>self.xlen); self.pc+=4  # RV32M
+    def _mulhsu(self, rd, rs1, rs2,    **_): self.x[rd] = sext(self.xlen, (                self.x[rs1]  * zext(self.xlen, self.x[rs2]))>>self.xlen); self.pc+=4  # RV32M
+    def _div   (self, rd, rs1, rs2,    **_): self.x[rd] = sext(self.xlen, (self.idiv2zero( self.x[rs1]  ,                 self.x[rs2]))    ) if self.x[rs2] != 0 else -1; self.pc+=4  # RV32M
+    def _divu  (self, rd, rs1, rs2,    **_): self.x[rd] = sext(self.xlen, (zext(self.xlen, self.x[rs1]) //zext(self.xlen, self.x[rs2]))    ) if self.x[rs2] != 0 else -1; self.pc+=4  # RV32M
+    def _rem   (self, rd, rs1, rs2,    **_): self.x[rd] = sext(self.xlen, (self.rem2zero ( self.x[rs1]  ,                 self.x[rs2]))    ) if self.x[rs2] != 0 else self.x[rs1]; self.pc+=4  # RV32M
+    def _remu  (self, rd, rs1, rs2,    **_): self.x[rd] = sext(self.xlen, (zext(self.xlen, self.x[rs1]) % zext(self.xlen, self.x[rs2]))    ) if self.x[rs2] != 0 else self.x[rs1]; self.pc+=4  # RV32M
+    def _mulw  (self, rd, rs1, rs2,    **_): self.x[rd] = sext(32,        (sext(32,        self.x[rs1]) * sext(32,        self.x[rs2]))    ); self.pc+=4  # RV64M
+    def _divw  (self, rd, rs1, rs2,    **_): self.x[rd] = sext(32, (self.idiv2zero(sext(32,self.x[rs1]) , sext(32,        self.x[rs2])))   ) if sext(32,self.x[rs2]) != 0 else -1; self.pc+=4  # RV64M
+    def _divuw (self, rd, rs1, rs2,    **_): self.x[rd] = sext(32, (self.idiv2zero(zext(32,self.x[rs1]) , zext(32,        self.x[rs2])))   ) if sext(32,self.x[rs2]) != 0 else -1; self.pc+=4  # RV64M
+    def _remw  (self, rd, rs1, rs2,    **_): self.x[rd] = sext(32, (self.rem2zero (sext(32,self.x[rs1]) , sext(32,        self.x[rs2])))   ) if sext(32,self.x[rs2]) != 0 else sext(32,self.x[rs1]); self.pc+=4  # RV64M
+    def _remuw (self, rd, rs1, rs2,    **_): self.x[rd] = sext(32, (self.rem2zero (zext(32,self.x[rs1]) , zext(32,        self.x[rs2])))   ) if sext(32,self.x[rs2]) != 0 else sext(32,self.x[rs1]); self.pc+=4  # RV64M
+    def _c_addi(self, rd_rs1, nzimm6,  **_): self.x[rd_rs1] += nzimm6; self.pc+=2  # c.nop required to pass test rv32i_m/privilege/src/misalign-jal-01.S
     def step(self):
         self.op = next(rvdecoder(self.mem.load(self.pc, 'I'), base=self.pc)); trace.clear()
         if hasattr(self, '_'+self.op.name): getattr(self, '_'+self.op.name)(**self.op.args)  # instruction dispatch 

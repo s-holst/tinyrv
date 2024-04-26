@@ -1,6 +1,6 @@
 [project]
 name = "tinyrv"
-version = "0.0.4"
+version = "0.0.5"
 authors = [
   { name="Stefan Holst", email="mail@s-holst.de" },
 ]

@@ -3,8 +3,8 @@
 A RISC-V instruction decoder and instruction set simulator in less than 200 lines of python.
 
 - Uses official RISC-V specs to decode *every* specified RISC-V instruction.
-- Emulates at least the base ISAs and is easily extendable.
-- RV32IZicsr_Zifencei and RV64IZicsr_Zifencei compliance validated using RISCOF (see Testing below).
+- Simulates the base ISAs and is easily extendable.
+- RV32IMZicsr_Zifencei and RV64IMZicsr_Zifencei compliance validated using RISCOF (see Testing below).
 
 ## Getting Started
 
