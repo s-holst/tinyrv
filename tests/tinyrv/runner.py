@@ -18,5 +18,4 @@ with open('DUT-tinyrv.signature', 'w') as f:
     for addr in range(syms['begin_signature'], syms['end_signature'], 4):
         f.write(f'{mem.load(addr,"I"):08x}\n')
     if rv.op.addr != syms['rvtest_code_end']:
-        #f.write('test unfinished!\n')
         print(f'test unfinished? {rv.op.addr:016x} {syms["rvtest_code_end"]:016x}')

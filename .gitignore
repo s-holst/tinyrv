@@ -13,3 +13,4 @@ __pycache__
 tinyrv-opcodes
 tests/riscof_work
 tests/riscv-arch-test
+tests/riscv-tests

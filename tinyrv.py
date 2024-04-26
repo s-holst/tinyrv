@@ -22,7 +22,7 @@ iregs = 'zero,ra,sp,gp,tp,t0,t1,t2,fp,s1,a0,a1,a2,a3,a4,a5,a6,a7,s2,s3,s4,s5,s6,
 def zext(length, word): return word&((1<<length)-1)
 def sext(length, word): return word|~((1<<length)-1) if word&(1<<(length-1)) else zext(length, word)
 def xfmt(length, word): return f'{{:0{length//4}x}}'.format(zext(length, word))
-trace = []
+tinfo = []
 
 class rvop:
     def __init__(self, **kwargs): [setattr(self, k, v) for k, v in kwargs.items()]
@@ -85,34 +85,33 @@ class rvmem:
     def store(self, addr, data, fmt=None):
         page, pa, fmt = (*self._page_pa(addr), fmt or self.fmt_conv[self.xlen])
         page[pa:pa+self.fmt_conv[fmt]//8] = struct.pack(fmt, data)
-        trace.append(f'{xfmt(self.fmt_conv[fmt], data)}->mem[{xfmt(self.xlen, addr)}]')
+        tinfo.append(f'{xfmt(self.fmt_conv[fmt], data)}->mem[{xfmt(self.xlen, addr)}]')
     def load(self, addr, fmt=None):
         page, pa, fmt = (*self._page_pa(addr), fmt or self.fmt_conv[self.xlen])
         data = struct.unpack(fmt, page[pa:pa+self.fmt_conv[fmt]//8])[0]
-        trace.append(f'mem[{xfmt(self.xlen, addr)}]->{xfmt(self.fmt_conv[fmt], data)}')
+        tinfo.append(f'mem[{xfmt(self.xlen, addr)}]->{xfmt(self.fmt_conv[fmt], data)}')
         return data
 
 class rvregs:
     def __init__(self, xlen): self._x, self.xlen = [0]*32, xlen
     def __getitem__(self, i): return self._x[i]
     def __setitem__(self, i, d):
-        if i!=0 and d!=self._x[i]: trace.append(f'{iregs[i]}=' + (f'{zext(self.xlen, d):08x}' if d>>32 in (0, -1) else f'{zext(self.xlen, d):016x}'))
+        if i!=0 and d!=self._x[i]: tinfo.append(f'{iregs[i]}=' + (f'{zext(self.xlen, d):08x}' if d>>32 in (0, -1) else f'{zext(self.xlen, d):016x}'))
         if i!=0: self._x[i] = d
 
 class rvsim:  # simulates RV32IMZicsr_Zifencei, RV64IMZicsr_Zifencei
-    def __init__(self, mem, xlen=64, allow_unaligned=False):
-        self.mem, self.xlen, self.allow_unaligned = mem, xlen, allow_unaligned
+    def __init__(self, mem, xlen=64, misaligned_exceptions=True):
+        self.mem, self.xlen, self.misaligned_exceptions = mem, xlen, misaligned_exceptions
         self.pc, self.x, self.f, self.csr = 0, rvregs(xlen), [0]*32, [0]*4096
         [setattr(self, n, i) for i, n in enumerate(iregs)]
         [setattr(self, n, a) for a, n in csrs.items()]
     def __repr__(self): return '\n'.join(['  '.join([f'x{r+rr:02d}({(iregs[r+rr])[-2:]})={xfmt(self.xlen, self.x[r+rr])}' for r in range(0, 32, 8)]) for rr in range(8)])
-    def addop(self, _opfn): setattr(self, _opfn.__name__, _opfn.__get__(self, rvsim))
-    def mtrap(self, tval, cause): self.csr[self.mtval], self.csr[self.mepc], self.csr[self.mcause], self.pc = zext(self.xlen,tval), self.pc, cause, zext(self.xlen,self.csr[self.mtvec]&(~3)); trace.append(f'mtrap cause={cause} tval={hex(tval)}')
+    def mtrap(self, tval, cause): self.csr[self.mtval], self.csr[self.mepc], self.csr[self.mcause], self.pc = zext(self.xlen,tval), self.pc, cause, zext(self.xlen,self.csr[self.mtvec]&(~3)); tinfo.append(f'mtrap cause={cause} tval={hex(tval)}')
     def checked_store(self, addr, rs2, fmt, mask, alignmask):
-        if addr&alignmask != 0 and not self.allow_unaligned: self.mtrap(addr, 6)
+        if addr&alignmask != 0 and self.misaligned_exceptions: self.mtrap(addr, 6)
         else: self.mem.store(zext(self.xlen,addr), self.x[rs2]&mask, fmt); self.pc += 4
     def checked_load (self, rd, addr, fmt, alignmask):
-        if addr&alignmask != 0 and not self.allow_unaligned: self.mtrap(addr, 4)
+        if addr&alignmask != 0 and self.misaligned_exceptions: self.mtrap(addr, 4)
         else: self.x[rd] = self.mem.load(zext(self.xlen,addr), fmt); self.pc += 4
     def idiv2zero(self, a, b): return -(-a // b) if (a < 0) ^ (b < 0) else a // b
     def rem2zero(self, a, b): return a - b * self.idiv2zero(a, b)
@@ -188,13 +187,13 @@ class rvsim:  # simulates RV32IMZicsr_Zifencei, RV64IMZicsr_Zifencei
     def _remw  (self, rd, rs1, rs2,    **_): self.x[rd] = sext(32, (self.rem2zero (sext(32,self.x[rs1]) , sext(32,        self.x[rs2])))   ) if sext(32,self.x[rs2]) != 0 else sext(32,self.x[rs1]); self.pc+=4  # RV64M
     def _remuw (self, rd, rs1, rs2,    **_): self.x[rd] = sext(32, (self.rem2zero (zext(32,self.x[rs1]) , zext(32,        self.x[rs2])))   ) if sext(32,self.x[rs2]) != 0 else sext(32,self.x[rs1]); self.pc+=4  # RV64M
     def _c_addi(self, rd_rs1, nzimm6,  **_): self.x[rd_rs1] += nzimm6; self.pc+=2  # c.nop required to pass test rv32i_m/privilege/src/misalign-jal-01.S
-    def step(self):
-        self.op = next(rvdecoder(self.mem.load(self.pc, 'I'), base=self.pc)); trace.clear()
+    def step(self, trace=True):
+        self.op = next(rvdecoder(self.mem.load(self.pc, 'I'), base=self.pc)); tinfo.clear()
         if hasattr(self, '_'+self.op.name): getattr(self, '_'+self.op.name)(**self.op.args)  # instruction dispatch 
-        else: print(f'\nvvvvvvvv: unknown opcode: {zext(32,self.op.data):08x}')
-        print(f'{zext(64,self.op.addr):08x}: {str(self.op):40} #', ' '.join(trace))
-        if self.pc-self.op.addr not in (2, 4): print()
-    def run(self, limit=0, bpts=set()):
+        else: print(f'\n{zext(64,self.op.addr):08x}: unknown opcode: {zext(32,self.op.data):08x}')
+        if trace: print(f'{zext(64,self.op.addr):08x}: {str(self.op):40} #', ' '.join(tinfo))
+        if trace and self.pc-self.op.addr not in (2, 4): print()
+    def run(self, limit=0, bpts=set(), trace=True):
         while True:
-            self.step()
+            self.step(trace=trace)
             if self.op.addr in bpts|{self.pc} or (limit := limit-1)==0: break
