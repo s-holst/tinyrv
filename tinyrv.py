@@ -26,23 +26,14 @@ def xfmt(length, word): return f'{{:0{length//4}x}}'.format(zext(length, word))
 class rvop:
     def __init__(self, **kwargs): [setattr(self, k, v) for k, v in kwargs.items()]
     def arg_str(self):
-        args = [None]*4
-        for k, v in self.args.items():  # hand-coded argument formats
-            k = k.replace('c_','').replace('_n0','')
-            if self.name[:5] == 'fence':
-                if k in {'pred', 'succ'}: args[{'pred': 0, 'succ': 1}[k]] = ''.join(c for c, b in zip([*'iorw'], [i=='1' for i in f'{v:04b}']) if b)
-                elif k == 'fm': args.append(f'{k}={v:04b}')
-            elif self.name[:2] == 'c.' or self.name[0] == 'f': args.append(f'{k}={v}')  # TODO: compressed and fp ops
-            elif k == 'rd': args[0] = iregs[v]
-            elif k == 'csr': args[1] = csrs.get(v, hex(v))
-            elif k == 'rs1': args[2] = f"{self.args['imm12']}({iregs[v]})" if self.name in 'lb,lh,lw,ld,lbu,lhu,lwu,sb,sh,sw,sd,jalr'.split(',') else iregs[v]
-            elif k == 'rs2': args[3] = iregs[v]
-            elif k in ['imm12', 'zimm']: args.append(f'{hex(v) if abs(v) > 255 else v}' if self.name not in 'lb,lh,lw,ld,lbu,lhu,lwu,sb,sh,sw,sd,jalr'.split(',') else None)
-            elif k in ['jimm20', 'bimm12']: args.append(hex(zext(64, self.addr+v)))
-            elif k in ['imm20']: args.append(hex(zext(32,v) if 'l' in self.name else v) if abs(v) > 255 else f'{v}')
-            elif 'sham' in k: args.append(f'{v}')
-            else: args.append(f'{k}={v}')  # fallback
-        args = args[::-1] if self.name in 'sb,sh,sw,sd'.split(',') else args  # snowflake sb/sh/sw/sd arg order: <src>, <dst>
+        if self.name in 'lb,lh,lw,ld,lbu,lhu,lwu,sb,sh,sw,sd,jalr'.split(','): args = [iregs[self.rd] if 'rd' in self.args else iregs[self.rs2], f"{self.imm12}({iregs[self.rs1]})"]
+        elif self.name[:3] == 'csr': args = [iregs[self.rd], csrs.get(self.csr, hex(self.csr)), iregs[self.rs1] if 'rs1' in self.args else f'{hex(self.zimm) if abs(self.zimm) > 255 else self.zimm}']
+        elif self.name[:5] == 'fence': args = [''.join(c for c, b in zip([*'iorw'], [i=='1' for i in f'{self.args[name]:04b}']) if b) for name in ('pred', 'succ') if name in self.args] + [f'fm={self.fm:04b}' if 'fm' in self.args else None]
+        elif (self.name[:2] == 'c_') or (self.name[0] == 'f'): args = [f'{k}={v}' for k, v in self.args.items()]  # TODO: compressed and fp ops
+        elif self.name == 'jal' or ('bimm12' in self.args): args = [iregs[self.rd] if 'rd' in self.args else None, iregs[self.rs1] if 'rs1' in self.args else None, iregs[self.rs2] if 'rs2' in self.args else None, hex(zext(64, self.addr+(self.jimm20 if 'jimm20' in self.args else self.bimm12)))]
+        elif ('rd' in self.args) and ('rs1' in self.args): args = [iregs[self.rd], iregs[self.rs1], iregs[self.rs2] if 'rs2' in self.args else None, *[f'{hex(self.args[name]) if abs(self.args[name]) > 255 else self.args[name]}' for name in ('imm12','shamtw','shamtd') if name in self.args]]
+        elif ('rd' in self.args) and ('imm20' in self.args): args = [iregs[self.rd], hex(zext(32,self.imm20) if 'l' in self.name else self.imm20) if abs(self.imm20) > 255 else f'{self.imm20}']
+        else: args = [f'{k}={v}' for k, v in self.args.items()]  # fallback
         return ', '.join([a for a in args if a is not None])
     def valid(self): return min([not('nz' in k or 'n0' in k) or v!=0 for k, v in self.args.items()] + [hasattr(self, 'extension')])
     def __repr__(self): return f'{self.name.replace("_","."):10} {self.arg_str()}'
