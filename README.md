@@ -2,6 +2,8 @@
 
 A RISC-V instruction decoder and instruction set simulator in less than 200 lines of python.
 
+Mission: Make the most useful RISC-V disassembler/simulator for understanding the ISA and reverse-engineering binaries with the least amount of easily extendable code. Simulation performance is secondary.
+
 - Uses official RISC-V specs to decode *every* specified RISC-V instruction.
 - Simulates the base ISAs and is easily extendable.
 - RV32IMZicsr_Zifencei and RV64IMZicsr_Zifencei compliance validated using RISCOF (see Testing below).
@@ -66,13 +68,12 @@ sp, sp, -220
 ```
 Simulate a binary:
 ```py
-from tinyrv import rvmem, rvsim
-mem = rvmem(xlen=32)  # xlen just for output formatting
-mem.load('firmware.bin', base=0)
+from tinyrv import rvsim
 rv = rvsim(mem, xlen=32)  # xlen affects overflows, sign extensions
+rv.load_bin('firmware.bin', base=0)
 print(rv)  # print registers
 print()
-rv.run(10)  # simulate up to 10 instructions
+rv.step()  # simulate a single instruction at rv.pc
 ```
 Outputs:
 ```

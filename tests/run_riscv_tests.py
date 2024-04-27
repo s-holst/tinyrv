@@ -2,7 +2,7 @@
 import subprocess
 from pathlib import Path
 
-from tinyrv import rvmem, rvsim
+from tinyrv import rvsim
 
 # git clone https://github.com/riscv-software-src/riscv-tests.git
 # cd riscv-tests
@@ -21,9 +21,8 @@ for f in Path('riscv-tests/isa').glob('rv??ui-p-*'):
     if '.' in str(f): continue
     subprocess.run(f'riscv64-unknown-elf-objcopy -O binary {str(f)} {str(f)}.bin'.split(' ')) 
     print('running', f)
-    mem = rvmem()
-    mem.read(str(f)+'.bin', base=0)
-    rv = rvsim2(mem, xlen=64 if 'rv64' in str(f) else 32, misaligned_exceptions=False)
+    rv = rvsim2(xlen=64 if 'rv64' in str(f) else 32, misaligned_exceptions=False)
+    rv.read_bin(str(f)+'.bin', base=0)
     rv.passed = False
     rv.run(2000, trace=False)
     if not rv.passed:

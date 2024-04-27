@@ -8,7 +8,7 @@ logger = logging.getLogger()
 
 class tinyrv(pluginTemplate):
     __model__ = "tinyrv"
-    __version__ = "0.0.5"
+    __version__ = "latest"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
