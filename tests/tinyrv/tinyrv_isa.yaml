@@ -1,6 +1,6 @@
 hart_ids: [0]
 hart0:
-  ISA: RV64IZicsr_Zifencei                # change to RV32IZicsr_Zifencei to run 32-bit only tests
+  ISA: RV64IMAZicsr_Zifencei                # change to RV32IMAZicsr_Zifencei to run 32-bit only tests
   physical_addr_sz: 32
   User_Spec_Version: '2.3'
   supported_xlen: [32, 64]  # change to [32] to run 32-bit only tests

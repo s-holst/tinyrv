@@ -10,7 +10,8 @@ __pycache__
 *.egg-info
 /env
 .idea
-tinyrv-opcodes
+.ipynb*
+riscv-opcodes
 tests/riscof_work
 tests/riscv-arch-test
 tests/riscv-tests

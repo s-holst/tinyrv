@@ -24,20 +24,14 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "tinyrv.py",
-  "tinyrv_opcodes/instr_dict.yaml",
-  "tinyrv_opcodes/csrs.csv",
-  "tinyrv_opcodes/csrs32.csv",
-  "tinyrv_opcodes/arg_lut.csv",
-  "tinyrv_opcodes/constants.py",
+  "tinyrv",
+  "tinyrv_opcodes_gen",
+  "tests/sail_cSim",
+  "tests/config.ini",
+  "tests/run_riscof.sh",
+  "tests/run_riscv_tests.py",
 ]
 
-[tool.hatch.build.targets.wheel]
-include = [
-  "tinyrv.py",
-  "tinyrv_opcodes/instr_dict.yaml",
-  "tinyrv_opcodes/csrs.csv",
-  "tinyrv_opcodes/csrs32.csv",
-  "tinyrv_opcodes/arg_lut.csv",
-  "tinyrv_opcodes/constants.py",
-]
+[project.scripts]
+tinyrv-dump = "tinyrv.dump:main"
+tinyrv-sim = "tinyrv.sim:main"
