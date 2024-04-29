@@ -2,6 +2,7 @@ import os, struct, array, struct
 from .opcodes import *
 
 iregs = 'zero,ra,sp,gp,tp,t0,t1,t2,fp,s1,a0,a1,a2,a3,a4,a5,a6,a7,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,t3,t4,t5,t6'.split(',')
+customs={0b0001011: 'custom0', 0b0101011: 'custom1', 0b1011011: 'custom2', 0b1111011: 'custom3'}
 def zext(length, word): return word&((1<<length)-1)
 def sext(length, word): return word|~((1<<length)-1) if word&(1<<(length-1)) else zext(length, word)
 def xfmt(length, word): return f'{{:0{length//4}x}}'.format(zext(length, word))
@@ -28,7 +29,7 @@ def rvsplitter(*data, base=0, lower16=0):  # yields addresses and 32-bit/16-bit(
         else: yield int(base)+addr*2, instr[0]
 
 def rvdecode(instr, addr=0):
-    o = rvop(addr=addr, data=instr, name={0b0001011: 'custom0', 0b0101011: 'custom1', 0b1011011: 'custom2', 0b1111011: 'custom3'}.get(instr&0b1111111,'UNKNOWN'), args={})
+    o = rvop(addr=addr, data=instr, name=customs.get(instr&0b1111111,'UNKNOWN'), args={})
     for mask, m_dict in mm_dicts:
         if op := m_dict.get(instr&mask, None):
             for vf, bits in op['arg_bits'].items():
@@ -43,17 +44,16 @@ def rvdecoder(*data, base=0):  # yields decoded instructions.
     for addr, instr in rvsplitter(*data, base=base):
         if instr != 0: yield rvdecode(instr, addr)
 
-class rvregs:
-    def __init__(self, xlen, trace_log): self._x, self.xlen, self.trace_log = [0]*32, xlen, trace_log
-    def __getitem__(self, i): return self._x[i]
-    def __setitem__(self, i, d):
-        if i!=0 and (self.trace_log is not None) and d!=self._x[i]: self.trace_log.append(f'{iregs[i]}=' + (f'{zext(self.xlen, d):08x}' if d>>32 in (0, -1) else f'{zext(self.xlen, d):016x}'))
-        if i!=0: self._x[i] = d
-
 class rvsim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
+    class rvregs:
+        def __init__(self, xlen, sim): self._x, self.xlen, self.sim = [0]*32, xlen, sim
+        def __getitem__(self, i): return self._x[i]
+        def __setitem__(self, i, d):
+            if i!=0 and (self.sim.trace_log is not None) and d!=self._x[i]: self.sim.trace_log.append(f'{iregs[i]}=' + (f'{zext(self.xlen, d):08x}' if d>>32 in (0, -1) else f'{zext(self.xlen, d):016x}'))
+            if i!=0: self._x[i] = d
     def __init__(self, xlen=64, misaligned_exceptions=True):
         self.xlen, self.misaligned_exceptions, self.trace_log = xlen, misaligned_exceptions, []
-        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages, self.fmt_conv = 0, rvregs(self.xlen, self.trace_log), [0]*32, [0]*4096, -1, 0, 3, 2<<12, {}, {'q': 64, 'Q': 64, 'i': 32, 'I': 32, 'h': 16, 'H': 16, 'b': 8, 'B': 8, 32: 'i', 64: 'q'}
+        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages, self.fmt_conv = 0, self.rvregs(self.xlen, self), [0]*32, [0]*4096, -1, 0, 3, 2<<12, {}, {'q': 64, 'Q': 64, 'i': 32, 'I': 32, 'h': 16, 'H': 16, 'b': 8, 'B': 8, 32: 'i', 64: 'q'}
         [setattr(self, n, i) for i, n in list(enumerate(iregs))+list(csrs.items())]  # convenience
     def __repr__(self): return '\n'.join(['  '.join([f'x{r+rr:02d}({(iregs[r+rr])[-2:]})={xfmt(self.xlen, self.x[r+rr])}' for r in range(0, 32, 8)]) for rr in range(8)])
     def csr_hook(self, csr, reqval): return reqval if (csr&0xc00)!=0xc00 else self.csr[csr]
@@ -188,7 +188,6 @@ class rvsim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
         self.op = rvdecode(self.load(self.pc, 'I', notify=False), addr=self.pc)
         self.cycle += 1; self.csr[self.mcycle] = zext(self.xlen, self.cycle)
         self.trace_log = [] if trace else None
-        self.x.trace_log = self.trace_log
         if self.hook_exec():
             if hasattr(self, '_'+self.op.name): getattr(self, '_'+self.op.name)(**self.op.args)  # instruction dispatch 
             else: print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}')
