@@ -2,7 +2,7 @@
 
 A RISC-V instruction decoder and instruction set simulator in less than 200 lines of python.
 
-Mission: Make the most useful RISC-V disassembler/simulator for understanding the ISA and reverse-engineering binaries with the least amount of easily extendable code. Simulation performance is secondary.
+**Mission**: Make the most useful RISC-V disassembler/simulator for understanding the ISA and reverse-engineering binaries with the least amount of easily extendable code. Simulation performance is secondary.
 
 - Uses official RISC-V specs to decode *every* specified RISC-V instruction.
 - Simulates the base ISAs and is easily extendable.
@@ -41,6 +41,10 @@ Outputs for `firmware.bin` from [picorv32](https://github.com/YosysHQ/picorv32/t
 picorv32 uses some custom instructions for IRQ handling.
 
 Decode instructions from data:
+```
+tinyrv-dump 0xf2410113 0xde0ec086 0x2013b7
+```
+or in python:
 ```py
 import tinyrv
 for op in tinyrv.rvdecoder(0xf2410113, 0xde0ec086, 0x2013b7):
@@ -56,19 +60,18 @@ lui        t2, 0x201000
 Each decoded instruction comes with a lot of metadata and parsed arguments:
 ```py
 op = tinyrv.rvdecode(0xf2410113)
-print(hex(op.data), op.name, op.extension, op.encoding, op.variable_fields, op.valid())
+print(hex(op.data), op.name, op.extension, op.variable_fields, bin(op.mask), bin(op.match), op.valid())
 print(op.args, op.rd, op.rs1, op.imm12)
 print(op.arg_str())
 ```
 ```
-0xf2410113 addi ['rv_i'] -----------------000-----0010011 ['rd', 'rs1', 'imm12'] True
+0xf2410113 addi ['rv_i'] ['rd', 'rs1', 'imm12'] 0b111000001111111 0b10011 True
 {'rd': 2, 'rs1': 2, 'imm12': -220} 2 2 -220
 sp, sp, -220
 ```
 Simulate a binary:
 ```py
-from tinyrv import rvsim
-rv = rvsim(mem, xlen=32)  # xlen affects overflows, sign extensions
+rv = tinyrv.rvsim(xlen=32)  # xlen affects overflows, sign extensions
 rv.read_bin('firmware.bin', base=0)
 print(rv)  # print registers
 print()
@@ -85,7 +88,8 @@ x05(t0)=00000000  x13(a3)=00000000  x21(s5)=00000000  x29(t4)=00000000
 x06(t1)=00000000  x14(a4)=00000000  x22(s6)=00000000  x30(t5)=00000000
 x07(t2)=00000000  x15(a5)=00000000  x23(s7)=00000000  x31(t6)=00000000
 
-vvvvvvvv: unknown opcode: 0800400b
+
+00000000: unimplemented: 0800400b custom0    
 00000000: custom0                                  #
 ```
 Simulation halts at the first instruction that is not implemented. Just set the pc and carry on:
@@ -126,13 +130,16 @@ rv.run(50)
 00000b0c: lbu        a5, 0(a0)                     # mem[0000c79e]->6c a5=0000006c
 00000b10: bne        a5, zero, 0xb18               # 
 ```
-Each jump, taken branch produces a newline, right-hand side has register changes and memory transactions Memory is paged, allocated on demand and persists. Now let's get past this loop by setting a breakpoint:
+Each jump, taken branch produces a newline, right-hand side has register changes and memory transactions. Memory is paged, allocated on demand and persists. Now let's get past this loop by setting a breakpoint:
 ```py
 rv.run(1000, bpts={0xb14})
 rv.run(10)
 ```
 ```
 ...
+00000b1c: sw         a5, 0(a4)                     # 00000064->mem[10000000]
+00000b20: jal        zero, 0xb0c                   # 
+
 00000b0c: lbu        a5, 0(a0)                     # mem[0000c7a7]->0a a5=0000000a
 00000b10: bne        a5, zero, 0xb18               # 
 
@@ -146,9 +153,16 @@ rv.run(10)
 
 00000464: addi       ra, zero, 0x3e8               # ra=000003e8
 
-00000468: unknown opcode: 0a00e00b
-00000468: custom0                                  #
+00000468: unimplemented: 0a00e00b custom0    
+00000468: custom0                                  # 
 ```
+Simulate from command line:
+```
+# usage: tinyrv-sim file.bin [(32|64) [run limit in decimal [start PC in hex]]]
+
+tinyrv-sim firmware.bin 32 100 8
+```
+
 
 ## Dev Setup
 
