@@ -28,7 +28,7 @@ def rvsplitter(*data, base=0, lower16=0):  # yields addresses and 32-bit/16-bit(
         elif instr[0]&3 == 3: lower16 = instr[0]  # Two LSBs set: 32-bit instruction
         else: yield int(base)+addr*2, instr[0]
 
-def rvdecode(instr, addr=0):
+def rvdecode(instr, addr=0):  # decodes one instruction
     o = rvop(addr=addr, data=instr, name=customs.get(instr&0b1111111,'UNKNOWN'), args={})
     for mask, m_dict in mm_dicts:
         if op := m_dict.get(instr&mask, None):
@@ -51,19 +51,19 @@ class rvsim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
         def __setitem__(self, i, d):
             if i!=0 and (self.sim.trace_log is not None) and d!=self._x[i]: self.sim.trace_log.append(f'{iregs[i]}=' + (f'{zext(self.xlen, d):08x}' if d>>32 in (0, -1) else f'{zext(self.xlen, d):016x}'))
             if i!=0: self._x[i] = d
-    def __init__(self, xlen=64, misaligned_exceptions=True):
-        self.xlen, self.misaligned_exceptions, self.trace_log = xlen, misaligned_exceptions, []
+    def __init__(self, xlen=64, trap_misaligned=True):
+        self.xlen, self.trap_misaligned, self.trace_log = xlen, trap_misaligned, []
         self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages, self.fmt_conv = 0, self.rvregs(self.xlen, self), [0]*32, [0]*4096, -1, 0, 3, 2<<12, {}, {'q': 64, 'Q': 64, 'i': 32, 'I': 32, 'h': 16, 'H': 16, 'b': 8, 'B': 8, 32: 'i', 64: 'q'}
         [setattr(self, n, i) for i, n in list(enumerate(iregs))+list(csrs.items())]  # convenience
     def __repr__(self): return '\n'.join(['  '.join([f'x{r+rr:02d}({(iregs[r+rr])[-2:]})={xfmt(self.xlen, self.x[r+rr])}' for r in range(0, 32, 8)]) for rr in range(8)])
-    def csr_hook(self, csr, reqval): return reqval if (csr&0xc00)!=0xc00 else self.csr[csr]
-    def store_notify(self, addr): pass  # called *after* each store to memory
-    def load_notify(self, addr): pass  # called *before* each load from memory
+    def hook_csr(self, csr, reqval): return reqval if (csr&0xc00)!=0xc00 else self.csr[csr]
+    def notify_stored(self, addr): pass  # called *after* mem store
+    def notify_loading(self, addr): pass  # called *before* mem load
     def mtrap(self, tval, cause):
         self.csr[self.mtval], self.csr[self.mepc], self.csr[self.mcause], self.pc = zext(self.xlen,tval), self.op.addr, cause, zext(self.xlen,self.csr[self.mtvec]&(~3))
         if self.trace_log is not None: self.trace_log.append(f'mtrap cause={hex(cause)} tval={hex(tval)}')
         self.csr[self.mstatus] = ((self.csr[self.mstatus]&0x08) << 4) | (self.current_mode << 11)
-    def read_bin(self, file, base=0): [self.store(i+base, b, 'B') for i, b in enumerate(open(file, 'rb').read())]  # FIXME: SLOOOOW
+    def read_bin(self, file, base=0): [self.store(i+base, b, 'B', notify=False) for i, b in enumerate(open(file, 'rb').read())]  # FIXME: SLOOOOW
     def page_pa_(self, addr):
         pb, pa = addr&~(self.mem_psize-1), addr&(self.mem_psize-1)
         if pb not in self.mem_pages: self.mem_pages[pb] = bytearray(self.mem_psize)
@@ -72,18 +72,18 @@ class rvsim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
         page, pa, fmt = (*self.page_pa_(addr), fmt or self.fmt_conv[self.xlen])
         page[pa:pa+self.fmt_conv[fmt[-1:]]//8] = struct.pack(fmt, data)
         if self.trace_log is not None: self.trace_log.append(f'{xfmt(self.fmt_conv[fmt[-1:]], data)}->mem[{xfmt(self.xlen, addr)}]')
-        if notify: self.store_notify(addr)
+        if notify: self.notify_stored(addr)
     def load(self, addr, fmt=None, notify=True):
-        if notify: self.load_notify(addr)
+        if notify: self.notify_loading(addr)
         page, pa, fmt = (*self.page_pa_(addr), fmt or self.fmt_conv[self.xlen])
         data = struct.unpack(fmt, page[pa:pa+self.fmt_conv[fmt[-1:]]//8])[0]
         if self.trace_log is not None: self.trace_log.append(f'mem[{xfmt(self.xlen, addr)}]->{xfmt(self.fmt_conv[fmt[-1:]], data)}')
         return data
     def checked_store(self, addr, data, fmt, alignmask):
-        if addr&alignmask != 0 and self.misaligned_exceptions: self.mtrap(addr, 6)
+        if addr&alignmask != 0 and self.trap_misaligned: self.mtrap(addr, 6)
         else: self.store(zext(self.xlen,addr), data, fmt)
     def checked_load (self, addr, fallback, fmt, alignmask):
-        if addr&alignmask != 0 and self.misaligned_exceptions: self.mtrap(addr, 4); return fallback
+        if addr&alignmask != 0 and self.trap_misaligned: self.mtrap(addr, 4); return fallback
         else: return self.load(zext(self.xlen,addr), fmt)
     def idiv2zero(self, a, b): return -(-a // b) if (a < 0) ^ (b < 0) else a // b
     def rem2zero(self, a, b): return a - b * self.idiv2zero(a, b)
@@ -138,12 +138,12 @@ class rvsim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def _sraw     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32,        sext(32,        self.x[rs1]) >> (self.x[rs2]&31))
     def _fence    (self,                   **_): self.pc+=4
     def _fence_i  (self,                   **_): self.pc+=4
-    def _csrrw    (self, rd, csr, rs1,     **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.csr_hook(csr, self.x[rs1]               )
-    def _csrrs    (self, rd, csr, rs1,     **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.csr_hook(csr, self.csr[csr]| self.x[rs1])
-    def _csrrc    (self, rd, csr, rs1,     **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.csr_hook(csr, self.csr[csr]&~self.x[rs1])
-    def _csrrwi   (self, rd, csr, zimm,    **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.csr_hook(csr, zimm                      )
-    def _csrrsi   (self, rd, csr, zimm,    **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.csr_hook(csr, self.csr[csr]| zimm       )
-    def _csrrci   (self, rd, csr, zimm,    **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.csr_hook(csr, self.csr[csr]&~zimm       )
+    def _csrrw    (self, rd, csr, rs1,     **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.x[rs1]               )
+    def _csrrs    (self, rd, csr, rs1,     **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]| self.x[rs1])
+    def _csrrc    (self, rd, csr, rs1,     **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]&~self.x[rs1])
+    def _csrrwi   (self, rd, csr, zimm,    **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, zimm                      )
+    def _csrrsi   (self, rd, csr, zimm,    **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]| zimm       )
+    def _csrrci   (self, rd, csr, zimm,    **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]&~zimm       )
     def _mret     (self,                   **_): self.pc = zext(self.xlen, self.csr[self.mepc]); mmode = (self.csr[self.mstatus]>>11)&3; self.csr[self.mstatus] = (self.current_mode << 11) | 0x80 | ((self.csr[self.mstatus]&0x80) >> 4); self.current_mode = mmode
     def _ecall    (self,                   **_): self.mtrap(0, 8 if self.current_mode == 0 else 11); #print('****ecall')
     def _ebreak   (self,                   **_): self.mtrap(self.op.addr, 3); #print('****ebreak')

@@ -7,6 +7,7 @@ A RISC-V instruction decoder and instruction set simulator in less than 200 line
 - Uses official RISC-V specs to decode *every* specified RISC-V instruction.
 - Simulates the base ISAs and is easily extendable.
 - RV32IMAZicsr_Zifencei and RV64IMAZicsr_Zifencei compliance validated using RISCOF (see Testing below).
+- Boots Linux! Big thanks to CNLohr for [mini-rv32ima](https://github.com/cnlohr/mini-rv32ima).
 
 ## Getting Started
 
@@ -239,6 +240,13 @@ autoconf
 make
 cd ..
 ./run_riscv_tests.py
+```
+
+### Boot Linux
+
+```
+cd tests
+python3 linux.py
 ```
 
 ## Related

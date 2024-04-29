@@ -21,7 +21,7 @@ for f in Path('riscv-tests/isa').glob('rv??ui-p-*'):
     if '.' in str(f): continue
     subprocess.run(f'riscv64-unknown-elf-objcopy -O binary {str(f)} {str(f)}.bin'.split(' ')) 
     print('running', f)
-    rv = rvsim2(xlen=64 if 'rv64' in str(f) else 32, misaligned_exceptions=False)
+    rv = rvsim2(xlen=64 if 'rv64' in str(f) else 32, trap_misaligned=False)
     rv.read_bin(str(f)+'.bin', base=0)
     rv.passed = False
     rv.run(2000, trace=False)
