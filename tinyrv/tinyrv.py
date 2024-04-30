@@ -30,7 +30,7 @@ def rvsplitter(*data, base=0, lower16=0):  # yields addresses and 32-bit/16-bit(
 
 def decode(instr, addr=0):  # decodes one instruction
     o = rvop(addr=addr, data=instr, name=customs.get(instr&0b1111111,'UNKNOWN'), args={})
-    for mask, m_dict in mm_dicts:
+    for mask, m_dict in mask_match:
         if op := m_dict.get(instr&mask, None):
             for vf, bits in op['arg_bits'].items():
                 value = 0
