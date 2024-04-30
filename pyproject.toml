@@ -37,5 +37,5 @@ include = [
 ]
 
 [project.scripts]
-tinyrv-dump = "tinyrv.dump:main"
-tinyrv-sim = "tinyrv.sim:main"
+tinyrv-dump = "tinyrv.tinyrv_dump:main"
+tinyrv-sim = "tinyrv.tinyrv_sim:main"
