@@ -30,6 +30,10 @@ include = [
   "tests/config.ini",
   "tests/run_riscof.sh",
   "tests/run_riscv_tests.py",
+  "tests/linux.py",
+  "tests/sixtyfourmb.dtb",
+  "tests/sixtyfourmb.dts",
+  "tests/Image.gz",
 ]
 
 [project.scripts]

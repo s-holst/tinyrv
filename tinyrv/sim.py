@@ -6,7 +6,7 @@ def main():
     xlen = 32 if len(sys.argv) < 3 else int(sys.argv[2])
     limit = 0 if len(sys.argv) < 4 else int(sys.argv[3])
     pc = 0 if len(sys.argv) < 5 else int(sys.argv[4], 16)
-    rv = tinyrv.rvsim(xlen=xlen, trap_misaligned=False)
+    rv = tinyrv.sim(xlen=xlen, trap_misaligned=False)
     rv.read_bin(sys.argv[1], base=0)
     rv.pc = pc
     rv.run(limit)

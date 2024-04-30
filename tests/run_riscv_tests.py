@@ -2,7 +2,7 @@
 import subprocess
 from pathlib import Path
 
-from tinyrv import rvsim
+from tinyrv import sim
 
 # git clone https://github.com/riscv-software-src/riscv-tests.git
 # cd riscv-tests
@@ -10,7 +10,7 @@ from tinyrv import rvsim
 # ./configure
 # make
 
-class rvsim2(rvsim):
+class rvsim2(sim):
     def _ecall(self, **_):
         if self.x[self.a7] == 93 and self.x[self.a0] == 0:
             self.passed = True

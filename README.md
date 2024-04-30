@@ -48,7 +48,7 @@ tinyrv-dump 0xf2410113 0xde0ec086 0x2013b7
 or in python:
 ```py
 import tinyrv
-for op in tinyrv.rvdecoder(0xf2410113, 0xde0ec086, 0x2013b7):
+for op in tinyrv.decoder(0xf2410113, 0xde0ec086, 0x2013b7):
     print(op)
 ```
 Outputs four instructions (the second word contains actually two 16-bit compressed instructions):
@@ -60,7 +60,7 @@ lui        t2, 0x201000
 ```
 Each decoded instruction comes with a lot of metadata and parsed arguments:
 ```py
-op = tinyrv.rvdecode(0xf2410113)
+op = tinyrv.decode(0xf2410113)
 print(hex(op.data), op.name, op.extension, op.variable_fields, bin(op.mask), bin(op.match), op.valid())
 print(op.args, op.rd, op.rs1, op.imm12)
 print(op.arg_str())
@@ -72,7 +72,7 @@ sp, sp, -220
 ```
 Simulate a binary:
 ```py
-rv = tinyrv.rvsim(xlen=32)  # xlen affects overflows, sign extensions
+rv = tinyrv.sim(xlen=32)  # xlen affects overflows, sign extensions
 rv.read_bin('firmware.bin', base=0)
 print(rv)  # print registers
 print()
@@ -248,6 +248,7 @@ cd ..
 cd tests
 python3 linux.py
 ```
+Takes 3-4 minutes on a reasonable fast machine and recent python.
 
 ## Related
 

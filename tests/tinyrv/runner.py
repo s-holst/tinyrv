@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import sys, subprocess
-from tinyrv import rvsim
+from tinyrv import sim
 
 xlen = int(sys.argv[1])
 
@@ -8,7 +8,7 @@ subprocess.run('riscv64-unknown-elf-objcopy -O binary my.elf my.bin'.split(' '))
 
 syms = dict((fields[-1], int(fields[0],16)) for fields in [line.decode().strip().split(' ') for line in subprocess.Popen(['riscv64-unknown-elf-objdump', '-t', 'my.elf'], stdout=subprocess.PIPE).stdout.readlines()] if len(fields) > 2 and fields[1] in ('l', 'g'))
 
-rv = rvsim(xlen=xlen)
+rv = sim(xlen=xlen)
 rv.read_bin('my.bin', base=syms['.text.init'])
 rv.pc = syms['.text.init']
 rv.run(16000, bpts={syms['rvtest_code_end']})

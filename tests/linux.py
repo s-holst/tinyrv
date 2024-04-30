@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
-import time
-import threading
-import queue
+import time, struct, gzip, threading, queue
 import readchar
-import struct
-import gzip
+from tinyrv import sim, zext, sext
 
-from tinyrv import rvsim, zext, sext
-
-# Heavily based on https://github.com/cnlohr/mini-rv32ima
-# Big thanks to CNLohr!
-
-class rvlinux(rvsim):
+# Heavily based on https://github.com/cnlohr/mini-rv32ima Big thanks to CNLohr!
+class rvlinux(sim):
     def __init__(self, image, dtb, ram_size, command_line):
         super().__init__(xlen=32, trap_misaligned=False)
         self.ram_size = ram_size
@@ -26,21 +19,18 @@ class rvlinux(rvsim):
         struct.pack_into('>I', *self.page_and_offset(dtb_addr+0x13c), ram_size)
         struct.pack_into('54s', *self.page_and_offset(dtb_addr+0xc0), command_line.encode())
 
-        # set up initial machine state
+        # set up initial vm state
         self.pc = self.ram_base
-        self.x[10] = 0  # hart ID
-        self.x[11] = dtb_addr
-        self.csr[self.mvendorid] = 0xff0ff0ff
+        self.x[self.a0] = 0  # hart ID
+        self.x[self.a1] = dtb_addr
         self.wfi = False
-        self.flux_capacitor = 0
+        self.flux_capacitor = 0  # for time travel
 
         # start thread for capturing user key presses
-        def add_input(input_queue):
-            while True: input_queue.put(readchar.readchar())
-        self.input_queue = queue.Queue()
-        input_thread = threading.Thread(target=add_input, args=(self.input_queue,))
-        input_thread.daemon = True
-        input_thread.start()
+        self.input = queue.Queue()
+        def add_input(input):
+            while True: input.put(readchar.readchar())
+        threading.Thread(target=add_input, args=(self.input,), daemon=True).start()
 
     def copy_in(self, bytes, base=0):
         for po in range(0, len(bytes), self.mem_psize):
@@ -50,9 +40,8 @@ class rvlinux(rvsim):
             page[0:nbytes] = bytes[po:po+nbytes]
 
     def hook_csr(self, csr, reqval):
-        if csr == self.misa: return super().hook_csr(csr, 0x40401101) # ignore writes to misa
-        elif csr == 0x139: char = chr(reqval); print(char, end='')  # console output
-        elif csr == 0x140: return super().hook_csr(csr, -1 if self.input_queue.empty() else ord(self.input_queue.get()))  # console input
+        if csr == 0x139: char = chr(reqval); print(char, end='')  # console output
+        elif csr == 0x140: return super().hook_csr(csr, -1 if self.input.empty() else ord(self.input.get()))  # console input
         return super().hook_csr(csr, reqval)
 
     def timer_fired(self):
@@ -70,21 +59,15 @@ class rvlinux(rvsim):
         return False
 
     def hook_exec(self):
-        if (self.cycle % 1000) == 0:
-            if self.timer_fired(): return False  # don't execute current op
-
+        if (self.cycle % 1000) == 0 and self.timer_fired(): return False  # don't execute current op
         while self.wfi:
-            time.sleep(0.005)
-            self.flux_capacitor += 5000  # when waiting, no harm in running clock close to real-time.
+            time.sleep(0.005); self.flux_capacitor += 5000  # when waiting, no harm in running clock close to real-time.
             if self.timer_fired(): return False  # done waiting. don't execute current op
-
         return super().hook_exec()  # continue normally
 
     def _wfi(self, **_): self.pc += 4; self.csr[self.mstatus] |= 0x8; self.wfi = True
 
 if __name__ == '__main__':
-    image = gzip.open('Image.gz', 'rb').read()
-    dtb = open('sixtyfourmb.dtb', 'rb').read()
-    linux = rvlinux(image, dtb, ram_size=64*1024*1024, command_line='console=hvc0')
+    linux = rvlinux(gzip.open('Image.gz', 'rb').read(), open('sixtyfourmb.dtb', 'rb').read(), ram_size=64*1024*1024, command_line='console=hvc0')
     print('booting linux...')
     linux.run(0, trace=False)

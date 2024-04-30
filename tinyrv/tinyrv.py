@@ -28,7 +28,7 @@ def rvsplitter(*data, base=0, lower16=0):  # yields addresses and 32-bit/16-bit(
         elif instr[0]&3 == 3: lower16 = instr[0]  # Two LSBs set: 32-bit instruction
         else: yield int(base)+addr*2, instr[0]
 
-def rvdecode(instr, addr=0):  # decodes one instruction
+def decode(instr, addr=0):  # decodes one instruction
     o = rvop(addr=addr, data=instr, name=customs.get(instr&0b1111111,'UNKNOWN'), args={})
     for mask, m_dict in mm_dicts:
         if op := m_dict.get(instr&mask, None):
@@ -40,11 +40,11 @@ def rvdecode(instr, addr=0):  # decodes one instruction
             break
     return o
 
-def rvdecoder(*data, base=0):  # yields decoded instructions.
+def decoder(*data, base=0):  # yields decoded instructions.
     for addr, instr in rvsplitter(*data, base=base):
-        if instr != 0: yield rvdecode(instr, addr)
+        if instr != 0: yield decode(instr, addr)
 
-class rvsim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
+class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     class rvregs:
         def __init__(self, xlen, sim): self._x, self.xlen, self.sim = [0]*32, xlen, sim
         def __getitem__(self, i): return self._x[i]
@@ -179,7 +179,7 @@ class rvsim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def hook_exec(self): return True
     def unimplemented(self, **_): print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}')
     def step(self, trace=True):
-        self.op = rvdecode(self.load('I', self.pc, notify=False, check_misaligned=False), addr=self.pc)
+        self.op = decode(self.load('I', self.pc, notify=False, check_misaligned=False), addr=self.pc)
         self.cycle += 1; self.csr[self.mcycle] = zext(self.xlen, self.cycle)
         self.trace_log = [] if trace else None
         if self.hook_exec():
