@@ -63,28 +63,21 @@ class rvsim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
         self.csr[self.mtval], self.csr[self.mepc], self.csr[self.mcause], self.pc = zext(self.xlen,tval), self.op.addr, cause, zext(self.xlen,self.csr[self.mtvec]&(~3))
         if self.trace_log is not None: self.trace_log.append(f'mtrap cause={hex(cause)} tval={hex(tval)}')
         self.csr[self.mstatus] = ((self.csr[self.mstatus]&0x08) << 4) | (self.current_mode << 11)
-    def read_bin(self, file, base=0): [self.store(i+base, b, 'B', notify=False) for i, b in enumerate(open(file, 'rb').read())]  # FIXME: SLOOOOW
-    def page_pa_(self, addr):
-        pb, pa = addr&~(self.mem_psize-1), addr&(self.mem_psize-1)
-        if pb not in self.mem_pages: self.mem_pages[pb] = bytearray(self.mem_psize)
-        return self.mem_pages[pb], pa
-    def store(self, addr, data, fmt=None, notify=True):
-        page, pa, fmt = (*self.page_pa_(addr), fmt or self.fmt_conv[self.xlen])
-        page[pa:pa+self.fmt_conv[fmt[-1:]]//8] = struct.pack(fmt, data)
-        if self.trace_log is not None: self.trace_log.append(f'{xfmt(self.fmt_conv[fmt[-1:]], data)}->mem[{xfmt(self.xlen, addr)}]')
-        if notify: self.notify_stored(addr)
-    def load(self, addr, fmt=None, notify=True):
-        if notify: self.notify_loading(addr)
-        page, pa, fmt = (*self.page_pa_(addr), fmt or self.fmt_conv[self.xlen])
-        data = struct.unpack(fmt, page[pa:pa+self.fmt_conv[fmt[-1:]]//8])[0]
-        if self.trace_log is not None: self.trace_log.append(f'mem[{xfmt(self.xlen, addr)}]->{xfmt(self.fmt_conv[fmt[-1:]], data)}')
+    def read_bin(self, file, base=0): [self.store('B', i+base, b, notify=False) for i, b in enumerate(open(file, 'rb').read())]  # FIXME: SLOOOOW
+    def page_and_offset(self, addr):
+        if addr&~(self.mem_psize-1) not in self.mem_pages: self.mem_pages[addr&~(self.mem_psize-1)] = bytearray(self.mem_psize)
+        return self.mem_pages[addr&~(self.mem_psize-1)], addr&(self.mem_psize-1)
+    def store(self, format, addr, data, notify=True):
+        if self.trace_log is not None: self.trace_log.append(f'{xfmt(struct.calcsize(format)*8, data)}->mem[{xfmt(self.xlen, addr)}]')
+        if self.trap_misaligned and addr&(struct.calcsize(format)-1) != 0: self.mtrap(addr, 6)
+        else: struct.pack_into(format, *self.page_and_offset(zext(self.xlen,addr)), data)
+        if notify: self.notify_stored(zext(self.xlen,addr))
+    def load(self, format, addr, fallback=0, notify=True, check_misaligned=True):
+        if check_misaligned and self.trap_misaligned and addr&(struct.calcsize(format)-1) != 0: self.mtrap(addr, 4); return fallback
+        if notify: self.notify_loading(zext(self.xlen,addr))
+        data = struct.unpack_from(format, *self.page_and_offset(zext(self.xlen,addr)))[0]
+        if self.trace_log is not None: self.trace_log.append(f'mem[{xfmt(self.xlen, addr)}]->{xfmt(struct.calcsize(format)*8, data)}')
         return data
-    def checked_store(self, addr, data, fmt, alignmask):
-        if addr&alignmask != 0 and self.trap_misaligned: self.mtrap(addr, 6)
-        else: self.store(zext(self.xlen,addr), data, fmt)
-    def checked_load (self, addr, fallback, fmt, alignmask):
-        if addr&alignmask != 0 and self.trap_misaligned: self.mtrap(addr, 4); return fallback
-        else: return self.load(zext(self.xlen,addr), fmt)
     def idiv2zero(self, a, b): return -(-a // b) if (a < 0) ^ (b < 0) else a // b
     def rem2zero(self, a, b): return a - b * self.idiv2zero(a, b)
     def _auipc    (self, rd, imm20,        **_): self.pc+=4; self.x[rd] = sext(self.xlen, self.op.addr+imm20)
@@ -97,17 +90,17 @@ class rvsim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def _bge      (self, rs1, rs2, bimm12, **_): self.pc = (self.op.addr+bimm12) if self.x[rs1] >= self.x[rs2] else self.op.addr+4
     def _bltu     (self, rs1, rs2, bimm12, **_): self.pc = (self.op.addr+bimm12) if zext(self.xlen, self.x[rs1]) <  zext(self.xlen, self.x[rs2]) else self.op.addr+4
     def _bgeu     (self, rs1, rs2, bimm12, **_): self.pc = (self.op.addr+bimm12) if zext(self.xlen, self.x[rs1]) >= zext(self.xlen, self.x[rs2]) else self.op.addr+4
-    def _sb       (self, rs1, rs2, imm12,  **_): self.pc+=4; self.store(    zext(self.xlen, self.x[rs1]+imm12), self.x[rs2]&((1<<8)-1), 'B')
-    def _sh       (self, rs1, rs2, imm12,  **_): self.pc+=4; self.checked_store(zext(self.xlen, self.x[rs1]+imm12), zext(16,self.x[rs2]), 'H', 1)
-    def _sw       (self, rs1, rs2, imm12,  **_): self.pc+=4; self.checked_store(zext(self.xlen, self.x[rs1]+imm12), zext(32,self.x[rs2]), 'I', 3)
-    def _sd       (self, rs1, rs2, imm12,  **_): self.pc+=4; self.checked_store(zext(self.xlen, self.x[rs1]+imm12), zext(64,self.x[rs2]), 'Q', 7)
-    def _lb       (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load(zext(self.xlen, self.x[rs1]+imm12), 'b')
-    def _lbu      (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load(zext(self.xlen, self.x[rs1]+imm12), 'B')
-    def _lh       (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.checked_load(self.x[rs1]+imm12, self.x[rd], 'h', 1)
-    def _lw       (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.checked_load(self.x[rs1]+imm12, self.x[rd], 'i', 3)
-    def _ld       (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.checked_load(self.x[rs1]+imm12, self.x[rd], 'q', 7)
-    def _lhu      (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.checked_load(self.x[rs1]+imm12, self.x[rd], 'H', 1)
-    def _lwu      (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.checked_load(self.x[rs1]+imm12, self.x[rd], 'I', 3)
+    def _sb       (self, rs1, rs2, imm12,  **_): self.pc+=4; self.store('B', self.x[rs1]+imm12, zext( 8,self.x[rs2]))
+    def _sh       (self, rs1, rs2, imm12,  **_): self.pc+=4; self.store('H', self.x[rs1]+imm12, zext(16,self.x[rs2]))
+    def _sw       (self, rs1, rs2, imm12,  **_): self.pc+=4; self.store('I', self.x[rs1]+imm12, zext(32,self.x[rs2]))
+    def _sd       (self, rs1, rs2, imm12,  **_): self.pc+=4; self.store('Q', self.x[rs1]+imm12, zext(64,self.x[rs2]))
+    def _lb       (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('b', self.x[rs1]+imm12, self.x[rd])
+    def _lbu      (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('B', self.x[rs1]+imm12, self.x[rd])
+    def _lh       (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('h', self.x[rs1]+imm12, self.x[rd])
+    def _lw       (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('i', self.x[rs1]+imm12, self.x[rd])
+    def _ld       (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('q', self.x[rs1]+imm12, self.x[rd])
+    def _lhu      (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('H', self.x[rs1]+imm12, self.x[rd])
+    def _lwu      (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('I', self.x[rs1]+imm12, self.x[rd])
     def _addi     (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  +          imm12)
     def _xori     (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  ^          imm12)
     def _ori      (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  |          imm12)
@@ -145,8 +138,8 @@ class rvsim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def _csrrsi   (self, rd, csr, zimm,    **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]| zimm       )
     def _csrrci   (self, rd, csr, zimm,    **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]&~zimm       )
     def _mret     (self,                   **_): self.pc = zext(self.xlen, self.csr[self.mepc]); mmode = (self.csr[self.mstatus]>>11)&3; self.csr[self.mstatus] = (self.current_mode << 11) | 0x80 | ((self.csr[self.mstatus]&0x80) >> 4); self.current_mode = mmode
-    def _ecall    (self,                   **_): self.mtrap(0, 8 if self.current_mode == 0 else 11); #print('****ecall')
-    def _ebreak   (self,                   **_): self.mtrap(self.op.addr, 3); #print('****ebreak')
+    def _ecall    (self,                   **_): self.mtrap(0, 8 if self.current_mode == 0 else 11)
+    def _ebreak   (self,                   **_): self.mtrap(self.op.addr, 3)
     def _mul      (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )           )
     def _mulh     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )>>self.xlen)
     def _mulhu    (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen, (zext(self.xlen, self.x[rs1]) * zext(self.xlen, self.x[rs2]))>>self.xlen)
@@ -160,37 +153,37 @@ class rvsim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def _divuw    (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32, (self.idiv2zero(zext(32,self.x[rs1]) , zext(32,        self.x[rs2])))          ) if sext(32,self.x[rs2]) != 0 else -1
     def _remw     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32, (self.rem2zero (sext(32,self.x[rs1]) , sext(32,        self.x[rs2])))          ) if sext(32,self.x[rs2]) != 0 else sext(32,self.x[rs1])
     def _remuw    (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32, (self.rem2zero (zext(32,self.x[rs1]) , zext(32,        self.x[rs2])))          ) if sext(32,self.x[rs2]) != 0 else sext(32,self.x[rs1])
-    def _amoswap_w(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'i', 3); self.checked_store(ors1,                            sext(32,ors2),   'i', 3); self.x[rd]=tmp
-    def _amoadd_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'i', 3); self.checked_store(ors1, sext(32,             tmp + sext(32,ors2)),  'i', 3); self.x[rd]=tmp
-    def _amoand_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'i', 3); self.checked_store(ors1, sext(32,             tmp & sext(32,ors2)),  'i', 3); self.x[rd]=tmp
-    def _amoor_w  (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'i', 3); self.checked_store(ors1, sext(32,             tmp | sext(32,ors2)),  'i', 3); self.x[rd]=tmp
-    def _amoxor_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'i', 3); self.checked_store(ors1, sext(32,             tmp ^ sext(32,ors2)),  'i', 3); self.x[rd]=tmp
-    def _amomax_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'i', 3); self.checked_store(ors1, sext(32, max(        tmp , sext(32,ors2))), 'i', 3); self.x[rd]=tmp
-    def _amomin_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'i', 3); self.checked_store(ors1, sext(32, min(        tmp , sext(32,ors2))), 'i', 3); self.x[rd]=tmp
-    def _amomaxu_w(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'i', 3); self.checked_store(ors1, sext(32, max(zext(32,tmp), zext(32,ors2))), 'i', 3); self.x[rd]=tmp
-    def _amominu_w(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'i', 3); self.checked_store(ors1, sext(32, min(zext(32,tmp), zext(32,ors2))), 'i', 3); self.x[rd]=tmp
-    def _amoswap_d(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'q', 7); self.checked_store(ors1,                                    ors2,    'q', 7); self.x[rd]=tmp
-    def _amoadd_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'q', 7); self.checked_store(ors1, sext(64,             tmp +         ors2 ),  'q', 7); self.x[rd]=tmp
-    def _amoand_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'q', 7); self.checked_store(ors1, sext(64,             tmp &         ors2 ),  'q', 7); self.x[rd]=tmp
-    def _amoor_d  (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'q', 7); self.checked_store(ors1, sext(64,             tmp |         ors2 ),  'q', 7); self.x[rd]=tmp
-    def _amoxor_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'q', 7); self.checked_store(ors1, sext(64,             tmp ^         ors2 ),  'q', 7); self.x[rd]=tmp
-    def _amomax_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'q', 7); self.checked_store(ors1, sext(64, max(        tmp , sext(64,ors2))), 'q', 7); self.x[rd]=tmp
-    def _amomin_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'q', 7); self.checked_store(ors1, sext(64, min(        tmp , sext(64,ors2))), 'q', 7); self.x[rd]=tmp
-    def _amomaxu_d(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'q', 3); self.checked_store(ors1, sext(64, max(zext(64,tmp), zext(64,ors2))), 'q', 7); self.x[rd]=tmp
-    def _amominu_d(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.checked_load(self.x[rs1], self.x[rd], 'q', 3); self.checked_store(ors1, sext(64, min(zext(64,tmp), zext(64,ors2))), 'q', 7); self.x[rd]=tmp
-    def _lr_w     (self, rd, rs1,          **_): self.pc+=4; self.lr_res_addr = self.x[rs1]; self.x[rd] = self.checked_load(self.x[rs1], self.x[rd], 'i', 3)
-    def _sc_w     (self, rd, rs1, rs2,     **_): 
-        if self.lr_res_addr == self.x[rs1]: self.pc+=4; self.lr_res_addr = -1; self.checked_store(self.x[rs1], sext(32, self.x[rs2]), 'i', 3); self.x[rd] = 0
-        else: self.pc+=4; self.lr_res_addr = -1; self.x[rd] = 1
+    def _amoswap_w(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1,                            sext(32,ors2)  ); self.x[rd]=tmp
+    def _amoadd_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32,             tmp + sext(32,ors2)) ); self.x[rd]=tmp
+    def _amoand_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32,             tmp & sext(32,ors2)) ); self.x[rd]=tmp
+    def _amoor_w  (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32,             tmp | sext(32,ors2)) ); self.x[rd]=tmp
+    def _amoxor_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32,             tmp ^ sext(32,ors2)) ); self.x[rd]=tmp
+    def _amomax_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32, max(        tmp , sext(32,ors2)))); self.x[rd]=tmp
+    def _amomin_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32, min(        tmp , sext(32,ors2)))); self.x[rd]=tmp
+    def _amomaxu_w(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32, max(zext(32,tmp), zext(32,ors2)))); self.x[rd]=tmp
+    def _amominu_w(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32, min(zext(32,tmp), zext(32,ors2)))); self.x[rd]=tmp
+    def _amoswap_d(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1,                                    ors2,  ); self.x[rd]=tmp
+    def _amoadd_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64,             tmp +         ors2 ) ); self.x[rd]=tmp
+    def _amoand_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64,             tmp &         ors2 ) ); self.x[rd]=tmp
+    def _amoor_d  (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64,             tmp |         ors2 ) ); self.x[rd]=tmp
+    def _amoxor_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64,             tmp ^         ors2 ) ); self.x[rd]=tmp
+    def _amomax_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, max(        tmp , sext(64,ors2)))); self.x[rd]=tmp
+    def _amomin_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, min(        tmp , sext(64,ors2)))); self.x[rd]=tmp
+    def _amomaxu_d(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, max(zext(64,tmp), zext(64,ors2)))); self.x[rd]=tmp
+    def _amominu_d(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, min(zext(64,tmp), zext(64,ors2)))); self.x[rd]=tmp
+    def _lr_w     (self, rd, rs1,          **_): self.pc+=4; self.lr_res_addr = self.x[rs1]; self.x[rd] = self.load('i', self.x[rs1], self.x[rd])
+    def _sc_w     (self, rd, rs1, rs2,     **_):
+        if self.lr_res_addr == self.x[rs1]: self.pc+=4; self.lr_res_addr = -1; self.store('i', self.x[rs1], sext(32, self.x[rs2])); self.x[rd] = 0
+        else:                               self.pc+=4; self.lr_res_addr = -1;                                                      self.x[rd] = 1
     def _c_addi  (self, rd_rs1_n0, nzimm6, **_): self.pc+=2; self.x[rd_rs1_n0] += nzimm6  # c.nop required to pass test rv32i_m/privilege/src/misalign-jal-01.S
     def hook_exec(self): return True
+    def unimplemented(self, **_): print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}')
     def step(self, trace=True):
-        self.op = rvdecode(self.load(self.pc, 'I', notify=False), addr=self.pc)
+        self.op = rvdecode(self.load('I', self.pc, notify=False, check_misaligned=False), addr=self.pc)
         self.cycle += 1; self.csr[self.mcycle] = zext(self.xlen, self.cycle)
         self.trace_log = [] if trace else None
         if self.hook_exec():
-            if hasattr(self, '_'+self.op.name): getattr(self, '_'+self.op.name)(**self.op.args)  # instruction dispatch 
-            else: print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}')
+            getattr(self, '_'+self.op.name, self.unimplemented)(**self.op.args)  # dynamic instruction dispatch
             if trace: print(f'{zext(64,self.op.addr):08x}: {str(self.op):40} #', ' '.join(self.trace_log))
             if trace and self.pc-self.op.addr not in (2, 4): print()
     def run(self, limit=0, bpts=set(), trace=True):

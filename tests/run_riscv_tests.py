@@ -13,7 +13,7 @@ from tinyrv import rvsim
 class rvsim2(rvsim):
     def _ecall(self, **_):
         if self.x[self.a7] == 93 and self.x[self.a0] == 0:
-            rv.passed = True
+            self.passed = True
         else:
             print(f'test failed ({self.x[self.a0]})')
 

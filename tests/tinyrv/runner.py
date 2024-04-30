@@ -15,6 +15,6 @@ rv.run(16000, bpts={syms['rvtest_code_end']})
 
 with open('DUT-tinyrv.signature', 'w') as f:
     for addr in range(syms['begin_signature'], syms['end_signature'], 4):
-        f.write(f'{rv.load(addr,"I"):08x}\n')
+        f.write(f'{rv.load("I",addr):08x}\n')
     if rv.op.addr != syms['rvtest_code_end']:
         print(f'test unfinished? {rv.op.addr:016x} {syms["rvtest_code_end"]:016x}')
