@@ -52,6 +52,7 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def __init__(self, xlen=64, trap_misaligned=True):
         self.xlen, self.trap_misaligned, self.trace_log = xlen, trap_misaligned, []
         self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages, self.fmt_conv = 0, self.rvregs(self.xlen, self), [0]*32, [0]*4096, -1, 0, 3, 2<<12, {}, {'q': 64, 'Q': 64, 'i': 32, 'I': 32, 'h': 16, 'H': 16, 'b': 8, 'B': 8, 32: 'i', 64: 'q'}
+        for op in opcodes.values(): op['func'] = getattr(self, '_'+op['name'], self.unimplemented)  # registering methods in a global. hopefully we are the only one...
         [setattr(self, n, i) for i, n in list(enumerate(iregs))+list(csrs.items())]  # convenience
     def __repr__(self): return '\n'.join(['  '.join([f'x{r+rr:02d}({(iregs[r+rr])[-2:]})={xfmt(self.xlen, self.x[r+rr])}' for r in range(0, 32, 8)]) for rr in range(8)])
     def hook_csr(self, csr, reqval): return reqval if (csr&0xc00)!=0xc00 else self.csr[csr]
@@ -177,11 +178,11 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def hook_exec(self): return True
     def unimplemented(self, **_): print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}')
     def step(self, trace=True):
-        self.op = decode(self.load('I', self.pc, notify=False, check_misaligned=False)); self.op.addr=self.pc  # setting op.addr afterwards enables opcode caching.
+        self.op = decode(struct.unpack_from('I', *self.page_and_offset(self.pc))[0]); self.op.addr=self.pc  # setting op.addr afterwards enables opcode caching.
         self.cycle += 1; self.csr[self.mcycle] = zext(self.xlen, self.cycle)
         self.trace_log = [] if trace else None
         if self.hook_exec():
-            getattr(self, '_'+self.op.name, self.unimplemented)(**self.op.args)  # dynamic instruction dispatch
+            self.op.func(**self.op.args)  # dynamic instruction dispatch
             if trace: print(f'{zext(64,self.op.addr):08x}: {str(self.op):40} #', ' '.join(self.trace_log))
             if trace and self.pc-self.op.addr not in (2, 4): print()
     def run(self, limit=0, bpts=set(), trace=True):

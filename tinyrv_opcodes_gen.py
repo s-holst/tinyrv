@@ -40,8 +40,8 @@ for name, op in opcodes.items():
                 prev_shift, prev_mask = shift, 1<<target
                 pieces.append(f'(x{shift})&{1<<target}')
             op['arg_getter'][vf] = f'$sext({len(op["arg_bits"][vf])},' + '|'.join(pieces) + ')$' if op['arg_bits'][vf][0] == 31 and vf != 'csr' else '$' + '|'.join(pieces) + '$'
-common_ops = ('addi,sw,lw,jal,bne,beq,add,jalr,lbu,slli,lui,andi,or,bltu,srli,and,sub,blt,bgeu,xor,sb,auipc,sltiu,bge,lb,mul,sltu,lhu,sll,srl,sh,amoadd_w,xori,ori,csrrci,csrrs,srai,fence,lr_w,sc_w,mulhu,amoor_w,lh,amoand_w,csrrsi,divu,div,remu,sra,slt,csrrw,amoswap_w,csrrc,mulh,fence_i,rem,mret,csrrwi').split(',')
 
+common_ops = ('addi,sw,lw,jal,bne,beq,add,jalr,lbu,slli,lui,andi,or,bltu,srli,and,sub,blt,bgeu,xor,sb,auipc,sltiu,bge,lb,mul,sltu,lhu,sll,srl,sh,amoadd_w,xori,ori,csrrci,csrrs,srai,fence,lr_w,sc_w,mulhu,amoor_w,lh,amoand_w,csrrsi,divu,div,remu,sra,slt,csrrw,amoswap_w,csrrc,mulh,fence_i,rem,mret,csrrwi').split(',')
 mask_match = []
 mask_match_aliases = collections.defaultdict(set)
 for mask in dict((opcodes[op]['mask'],1) for op in common_ops + list(opcodes)):
