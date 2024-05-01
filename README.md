@@ -248,7 +248,7 @@ cd ..
 cd tests
 python3 linux.py
 ```
-Takes 3-4 minutes on a reasonable fast machine and recent python.
+Takes less than two minutes on a reasonable fast machine and recent python.
 
 ## Related
 

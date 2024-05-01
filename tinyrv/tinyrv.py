@@ -1,4 +1,4 @@
-import os, struct, array, struct
+import os, struct, array, struct, functools
 from .opcodes import *
 
 iregs = 'zero,ra,sp,gp,tp,t0,t1,t2,fp,s1,a0,a1,a2,a3,a4,a5,a6,a7,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,t3,t4,t5,t6'.split(',')
@@ -28,14 +28,12 @@ def rvsplitter(*data, base=0, lower16=0):  # yields addresses and 32-bit/16-bit(
         elif instr[0]&3 == 3: lower16 = instr[0]  # Two LSBs set: 32-bit instruction
         else: yield int(base)+addr*2, instr[0]
 
+@functools.lru_cache(maxsize=4096)
 def decode(instr, addr=0):  # decodes one instruction
     o = rvop(addr=addr, data=instr, name=customs.get(instr&0b1111111,'UNKNOWN'), args={})
     for mask, m_dict in mask_match:
         if op := m_dict.get(instr&mask, None):
-            for vf, bits in op['arg_bits'].items():
-                value = 0
-                for bit in bits: value = (value<<1) | ((instr>>bit)&1 if bit>=0 else 0)
-                o.args[vf] = sext(len(bits), value) if bits[0] == 31 else value
+            o.args = dict((vf, getter(instr)) for vf, getter in op['arg_getter'].items())
             [setattr(o,k,v) for k,v in (op|o.args).items()]
             break
     return o
@@ -179,7 +177,7 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def hook_exec(self): return True
     def unimplemented(self, **_): print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}')
     def step(self, trace=True):
-        self.op = decode(self.load('I', self.pc, notify=False, check_misaligned=False), addr=self.pc)
+        self.op = decode(self.load('I', self.pc, notify=False, check_misaligned=False)); self.op.addr=self.pc  # setting op.addr afterwards enables opcode caching.
         self.cycle += 1; self.csr[self.mcycle] = zext(self.xlen, self.cycle)
         self.trace_log = [] if trace else None
         if self.hook_exec():
