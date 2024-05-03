@@ -40,7 +40,7 @@ class rvlinux(sim):
             page[0:nbytes] = bytes[po:po+nbytes]
 
     def hook_csr(self, csr, reqval):
-        if csr == 0x139: char = chr(reqval); print(char, end='')  # console output
+        if csr == 0x139: char = chr(reqval); print(char, end='', flush=True)  # console output
         elif csr == 0x140: return super().hook_csr(csr, -1 if self.input.empty() else ord(self.input.get()))  # console input
         return super().hook_csr(csr, reqval)
 

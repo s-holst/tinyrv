@@ -39,7 +39,7 @@ class tinyrv(pluginTemplate):
       # Delete Makefile if it already exists.
       if os.path.exists(self.work_dir+ "/Makefile." + self.name[:-1]):
             os.remove(self.work_dir+ "/Makefile." + self.name[:-1])
-      
+
       make = utils.makeUtil(makefilePath=os.path.join(self.work_dir, "Makefile." + self.name[:-1]))
       make.makeCommand = 'make -k -j' + self.num_jobs
 

@@ -1,4 +1,4 @@
-import os, struct, array, struct, functools
+import os, struct, array, struct, collections, functools
 from .opcodes import *
 
 iregs = 'zero,ra,sp,gp,tp,t0,t1,t2,fp,s1,a0,a1,a2,a3,a4,a5,a6,a7,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,t3,t4,t5,t6'.split(',')
@@ -51,21 +51,20 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
             if i!=0: self._x[i] = d
     def __init__(self, xlen=64, trap_misaligned=True):
         self.xlen, self.trap_misaligned, self.trace_log = xlen, trap_misaligned, []
-        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages, self.fmt_conv = 0, self.rvregs(self.xlen, self), [0]*32, [0]*4096, -1, 0, 3, 2<<12, {}, {'q': 64, 'Q': 64, 'i': 32, 'I': 32, 'h': 16, 'H': 16, 'b': 8, 'B': 8, 32: 'i', 64: 'q'}
+        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), [0]*32, [0]*4096, -1, 0, 3, 2<<12, collections.defaultdict(lambda: bytearray(2<<12))
         for op in opcodes.values(): op['func'] = getattr(self, '_'+op['name'], self.unimplemented)  # registering methods in a global. hopefully we are the only one...
-        [setattr(self, n, i) for i, n in list(enumerate(iregs))+list(csrs.items())]  # convenience
+        [setattr(self, n, i) for i, n in list(enumerate(iregs))]
+        [setattr(self, 'csr_'+n, i) for i, n in list(csrs.items())]  # convenience
     def __repr__(self): return '\n'.join(['  '.join([f'x{r+rr:02d}({(iregs[r+rr])[-2:]})={xfmt(self.xlen, self.x[r+rr])}' for r in range(0, 32, 8)]) for rr in range(8)])
     def hook_csr(self, csr, reqval): return reqval if (csr&0xc00)!=0xc00 else self.csr[csr]
     def notify_stored(self, addr): pass  # called *after* mem store
     def notify_loading(self, addr): pass  # called *before* mem load
     def mtrap(self, tval, cause):
-        self.csr[self.mtval], self.csr[self.mepc], self.csr[self.mcause], self.pc = zext(self.xlen,tval), self.op.addr, cause, zext(self.xlen,self.csr[self.mtvec]&(~3))
+        self.csr[self.csr_mtval], self.csr[self.csr_mepc], self.csr[self.csr_mcause], self.pc = zext(self.xlen,tval), self.op.addr, cause, zext(self.xlen,self.csr[self.csr_mtvec]&(~3))
         if self.trace_log is not None: self.trace_log.append(f'mtrap cause={hex(cause)} tval={hex(tval)}')
-        self.csr[self.mstatus] = ((self.csr[self.mstatus]&0x08) << 4) | (self.current_mode << 11)
+        self.csr[self.csr_mstatus] = ((self.csr[self.csr_mstatus]&0x08) << 4) | (self.current_mode << 11)
     def read_bin(self, file, base=0): [self.store('B', i+base, b, notify=False) for i, b in enumerate(open(file, 'rb').read())]  # FIXME: SLOOOOW
-    def page_and_offset(self, addr):
-        if addr&~(self.mem_psize-1) not in self.mem_pages: self.mem_pages[addr&~(self.mem_psize-1)] = bytearray(self.mem_psize)
-        return self.mem_pages[addr&~(self.mem_psize-1)], addr&(self.mem_psize-1)
+    def page_and_offset(self, addr): return self.mem_pages[addr&~(self.mem_psize-1)], addr&(self.mem_psize-1)
     def store(self, format, addr, data, notify=True):
         if self.trace_log is not None: self.trace_log.append(f'{xfmt(struct.calcsize(format)*8, data)}->mem[{xfmt(self.xlen, addr)}]')
         if self.trap_misaligned and addr&(struct.calcsize(format)-1) != 0: self.mtrap(addr, 6)
@@ -73,8 +72,9 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
         if notify: self.notify_stored(zext(self.xlen,addr))
     def load(self, format, addr, fallback=0, notify=True, check_misaligned=True):
         if check_misaligned and self.trap_misaligned and addr&(struct.calcsize(format)-1) != 0: self.mtrap(addr, 4); return fallback
-        if notify: self.notify_loading(zext(self.xlen,addr))
-        data = struct.unpack_from(format, *self.page_and_offset(zext(self.xlen,addr)))[0]
+        addr = zext(self.xlen,addr)
+        if notify: self.notify_loading(addr)
+        data = struct.unpack_from(format, *self.page_and_offset(addr))[0]
         if self.trace_log is not None: self.trace_log.append(f'mem[{xfmt(self.xlen, addr)}]->{xfmt(struct.calcsize(format)*8, data)}')
         return data
     def idiv2zero(self, a, b): return -(-a // b) if (a < 0) ^ (b < 0) else a // b
@@ -179,11 +179,12 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def unimplemented(self, **_): print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}')
     def step(self, trace=True):
         self.op = decode(struct.unpack_from('I', *self.page_and_offset(self.pc))[0]); self.op.addr=self.pc  # setting op.addr afterwards enables opcode caching.
-        self.cycle += 1; self.csr[self.mcycle] = zext(self.xlen, self.cycle)
+        self.cycle += 1; self.csr[self.csr_mcycle] = zext(self.xlen, self.cycle)
         self.trace_log = [] if trace else None
         if self.hook_exec():
+            #getattr(self, '_'+self.op.name, self.unimplemented)(**self.op.args)
             self.op.func(**self.op.args)  # dynamic instruction dispatch
-            if trace: print(f'{zext(64,self.op.addr):08x}: {str(self.op):40} #', ' '.join(self.trace_log))
+            if trace: print(f'{zext(64,self.op.addr):08x}: {str(self.op):40} # [{self.cycle-1}]', ' '.join(self.trace_log))
             if trace and self.pc-self.op.addr not in (2, 4): print()
     def run(self, limit=0, bpts=set(), trace=True):
         while True:
