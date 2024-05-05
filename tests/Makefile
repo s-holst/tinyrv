@@ -1,4 +1,4 @@
-test: test_mini32 test_mini64 run_riscv_tests run_riscof
+test: test_mini32 test_mini64 test_mini32semi test_mini64semi run_riscv_tests run_riscof
 
 ############# riscv-software-src/riscv-tests
 
@@ -30,17 +30,34 @@ riscv-arch-test:
 
 ############# mini
 
+#CC_FLAGS=-O2 -mcmodel=medany -static -specs=/usr/lib/picolibc/riscv64-unknown-elf/picolibc.specs --oslib=semihost
+CC_FLAGS=-O2 -mcmodel=medany -static
+CC_FLAGS_SEMI=${CC_FLAGS} -specs=/opt/riscv/riscv64-unknown-elf/lib/semihost.specs
+
+
 test_mini32: mini32
 	test "$(shell tinyrv-vm-linux mini32 foo 0x01 42)" = "hello mini32 foo 0x01 42"
 
 test_mini64: mini64
 	test "$(shell tinyrv-vm-linux mini64 foo 0x01 42)" = "hello mini64 foo 0x01 42"
 
+test_mini32semi: mini32semi
+	test "$(shell tinyrv-vm-semihosting mini32semi foo 0x01 42)" = "hello mini32semi foo 0x01 42"
+
+test_mini64semi: mini64semi
+	test "$(shell tinyrv-vm-semihosting mini64semi foo 0x01 42)" = "hello mini64semi foo 0x01 42"
+
 mini64: mini.c
-	riscv64-unknown-elf-gcc -O2 -mcmodel=medany -march=rv64ima -mabi=lp64 -static $^ -o $@
+	riscv64-unknown-elf-gcc ${CC_FLAGS} -march=rv64ima -mabi=lp64 $^ -o $@
 
 mini32: mini.c
-	riscv64-unknown-elf-gcc -O2 -mcmodel=medany -march=rv32ima -mabi=ilp32 -static $^ -o $@
+	riscv64-unknown-elf-gcc ${CC_FLAGS} -march=rv32ima -mabi=ilp32 $^ -o $@
+
+mini64semi: mini.c
+	riscv64-unknown-elf-gcc ${CC_FLAGS_SEMI} -march=rv64ima -mabi=lp64 $^ -o $@
+
+mini32semi: mini.c
+	riscv64-unknown-elf-gcc ${CC_FLAGS_SEMI} -march=rv32ima -mabi=ilp32 $^ -o $@
 
 %.bin: %
 	riscv64-unknown-elf-objcopy -O binary $< $@
@@ -50,9 +67,3 @@ mini32: mini.c
 
 clean:
 	-rm mini32* mini64*
-
-proxy:
-	riscv64-unknown-elf-gcc -mcmodel=medany -march=rv32g -mabi=ilp32 -static -std=gnu99 -O2 -ffast-math -fno-common -fno-builtin-printf -fno-tree-loop-distribute-patterns -Ienv -I. -c env/crt32.S env/proxy.c mini.c
-	riscv64-unknown-elf-gcc -mcmodel=medany -march=rv32g -mabi=ilp32 -static -nostdlib -nostartfiles -lm -lgcc -T env/test.ld crt32.o proxy.o mini.o -o mini.elf
-	riscv64-unknown-elf-objcopy -O binary mini.elf mini.bin
-
