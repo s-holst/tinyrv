@@ -13,6 +13,10 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+dependencies = [
+  "readchar",
+  "lief",
+]
 
 [project.urls]
 Homepage = "https://github.com/s-holst/tinyrv"
@@ -39,3 +43,5 @@ include = [
 [project.scripts]
 tinyrv-dump = "tinyrv.tinyrv_dump:main"
 tinyrv-sim = "tinyrv.tinyrv_sim:main"
+tinyrv-vm-linux = "tinyrv.vm:run_linux_vm"
+tinyrv-vm-riscof = "tinyrv.vm:run_riscof_vm"

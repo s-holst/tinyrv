@@ -14,7 +14,8 @@ class tinyrv(pluginTemplate):
         super().__init__(*args, **kwargs)
         config = kwargs['config']
         self.pluginpath=os.path.abspath(config['pluginpath'])
-        self.dut_exe = "python3 " + os.path.join(self.pluginpath, "runner.py")
+        #self.dut_exe = "python3 " + os.path.join(self.pluginpath, "runner.py")
+        self.dut_exe = "tinyrv-vm-riscof"
         self.num_jobs = str(config.get('jobs', 1))
         self.isa_spec = os.path.abspath(config['ispec'])
         self.platform_spec = os.path.abspath(config['pspec'])
@@ -23,11 +24,11 @@ class tinyrv(pluginTemplate):
     def initialise(self, suite, work_dir, archtest_env):
        self.work_dir = work_dir
        self.suite_dir = suite
-       self.compile_cmd = 'riscv{1}-unknown-elf-gcc -march={0} \
+       self.compile_cmd = 'riscv64-unknown-elf-gcc -march={0} \
          -static -mcmodel=medany -fvisibility=hidden -nostdlib -nostartfiles -g\
          -T '+self.pluginpath+'/env/link.ld\
          -I '+self.pluginpath+'/env/\
-         -I ' + archtest_env + ' {2} -o {3} {4}'
+         -I ' + archtest_env + ' {1} -o {2} {3}'
 
     def build(self, isa_yaml, platform_yaml):
       ispec = utils.load_yaml(isa_yaml)['hart0']
@@ -49,9 +50,10 @@ class tinyrv(pluginTemplate):
           test_dir = testentry['work_dir']
           elf = 'my.elf'
           compile_macros= ' -D' + " -D".join(testentry['macros'])
-          cmd = self.compile_cmd.format(testentry['isa'].lower(), self.xlen, test, elf, compile_macros)
+          cmd = self.compile_cmd.format(testentry['isa'].lower(), test, elf, compile_macros)
           if self.target_run:
-            simcmd = self.dut_exe + (' 64' if '64' in testentry['isa'] else ' 32')
+            #simcmd = self.dut_exe + (' 64' if '64' in testentry['isa'] else ' 32')
+            simcmd = self.dut_exe + ' my.elf >DUT-tinyrv.signature'
           else:
             simcmd = 'echo "NO RUN"'
 

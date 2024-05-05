@@ -47,7 +47,7 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
         def __init__(self, xlen, sim): self._x, self.xlen, self.sim = [0]*32, xlen, sim
         def __getitem__(self, i): return self._x[i]
         def __setitem__(self, i, d):
-            if i!=0 and (self.sim.trace_log is not None) and d!=self._x[i]: self.sim.trace_log.append(f'{iregs[i]}=' + (f'{zext(self.xlen, d):08x}' if d>>32 in (0, -1) else f'{zext(self.xlen, d):016x}'))
+            if i!=0 and (self.sim.trace_log is not None) and d!=self._x[i]: self.sim.trace_log.append(f'{iregs[i]}=' + (f'{zext(self.xlen, d):08x}' if self.xlen==32 else f'{zext(self.xlen, d):016x}'))
             if i!=0: self._x[i] = d
         def __repr__(self): return '\n'.join(['  '.join([f'x{r+rr:02d}({(iregs[r+rr])[-2:]})={xfmt(self.xlen, self._x[r+rr])}' for r in range(0, 32, 8)]) for rr in range(8)])
     def __init__(self, xlen=64, trap_misaligned=True):
@@ -89,8 +89,8 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def rem2zero(self, a, b): return a - b * self.idiv2zero(a, b)
     def _auipc    (self, rd, imm20,        **_): self.pc+=4; self.x[rd] = sext(self.xlen, self.op.addr+imm20)
     def _lui      (self, rd, imm20,        **_): self.pc+=4; self.x[rd] = imm20
-    def _jal      (self, rd, jimm20,       **_): self.pc, self.x[rd] = zext(self.xlen, self.op.addr+jimm20),    self.op.addr+4
-    def _jalr     (self, rd, rs1, imm12,   **_): self.pc, self.x[rd] = zext(self.xlen, self.x[rs1]+imm12)&(~1), self.op.addr+4 # LSB=0
+    def _jal      (self, rd, jimm20,       **_): self.pc, self.x[rd] = zext(self.xlen, self.op.addr+jimm20),    sext(self.xlen, self.op.addr+4)
+    def _jalr     (self, rd, rs1, imm12,   **_): self.pc, self.x[rd] = zext(self.xlen, self.x[rs1]+imm12)&(~1), sext(self.xlen, self.op.addr+4) # LSB=0
     def _beq      (self, rs1, rs2, bimm12, **_): self.pc = (self.op.addr+bimm12) if self.x[rs1] == self.x[rs2] else self.op.addr+4
     def _bne      (self, rs1, rs2, bimm12, **_): self.pc = (self.op.addr+bimm12) if self.x[rs1] != self.x[rs2] else self.op.addr+4
     def _blt      (self, rs1, rs2, bimm12, **_): self.pc = (self.op.addr+bimm12) if self.x[rs1] <  self.x[rs2] else self.op.addr+4
@@ -184,7 +184,7 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
         else:                               self.pc+=4; self.lr_res_addr = -1;                                                      self.x[rd] = 1
     def _c_addi  (self, rd_rs1_n0, nzimm6, **_): self.pc+=2; self.x[rd_rs1_n0] += nzimm6  # c.nop required to pass test rv32i_m/privilege/src/misalign-jal-01.S
     def hook_exec(self): return True
-    def unimplemented(self, **_): print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}')
+    def unimplemented(self, **_): print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}'); exit(1)
     def step(self, trace=True):
         self.op = decode(struct.unpack_from('I', *self.page_and_offset(self.pc))[0]); self.op.addr=self.pc  # setting op.addr afterwards enables opcode caching.
         self.cycle += 1; self.csr[self.csr_mcycle] = zext(self.xlen, self.cycle)
