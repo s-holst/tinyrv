@@ -11,9 +11,10 @@ def load_elf(vm, elf, trace=False):
         for s in elf.symbols:
             print(s)
     for s in elf.segments:
+        if trace: print(s)
         if s.virtual_size > 0 and len(bytes(s.content)) > 0:
-            if trace: print(f'loading {len(bytes(s.content))} bytes to {hex(s.virtual_address)}')
-            vm.copy_in(s.virtual_address, bytes(s.content))
+            if trace: print(f'loading {len(bytes(s.content))} bytes to {hex(s.physical_address)}')
+            vm.copy_in(s.physical_address, bytes(s.content))
     vm.pc = elf.entrypoint
     if trace: print(f'ELF entry point: {hex(vm.pc)}')
 
@@ -65,6 +66,7 @@ class linux(sim):
         self.exitcode = 0
         self.x[self.sp], arg_data = pack_args(args, self.xlen)  # puts argc and **argv on stack and init sp
         self.copy_in(self.x[self.sp], arg_data)
+        self.start_time = time.perf_counter()
 
     def _ecall(self, **_):
         # helpful: https://jborza.com/post/2021-05-11-riscv-linux-syscalls/
@@ -119,8 +121,8 @@ class linux(sim):
 
     def hook_exec(self):
         if (self.cycle % 1000) == 0:
-            current_time = zext(32, int(time.perf_counter()*1000))
-            self.store('I', 0x10000000, current_time, notify=False)
+            current_time = zext(32, int((time.perf_counter()-self.start_time)*1000000))
+            self.store('I', 0x1100bff8, current_time, notify=False)
         return self.keep_running
 
 class semihosting(sim):
@@ -143,42 +145,41 @@ class semihosting(sim):
         semihost_param = self.x[self.a1]
         ptr_bytes = 4 if self.xlen == 32 else 8
         ptr_fmt = 'I' if self.xlen == 32 else 'Q'
-        #print(f'semihost {hex(semihost_no)} {hex(semihost_param)} from {hex(self.op.addr)}')
         if semihost_no == 1:  # open
-            file_ptr = self.load('I', self.x[self.a1], 0, notify=False)
+            file_ptr = self.load('I', semihost_param, 0, notify=False)
             s = []
             while (c := self.load('B', file_ptr, 0, notify=False)) != 0:
                 s.append(chr(c))
                 file_ptr += 1
             fname = ''.join(s)
-            mode = self.load(ptr_fmt, self.x[self.a1]+ptr_bytes, 0, notify=False)
-            #fnlen = self.load('I', self.x[self.a1]+ptr_bytes*2, 0, notify=False)
+            mode = self.load(ptr_fmt, semihost_param+ptr_bytes, 0, notify=False)
+            #fnlen = self.load('I', semihost_param+ptr_bytes*2, 0, notify=False)
             handle = {(':tt', 0): 1, (':tt', 4): 2, (':tt', 8): 3}.get((fname, mode), -1)  # r:stdin, w:stdout, a:stderr
             #print(f'open {fname} mode {mode} -> {handle}')
             self.x[self.a0] = handle
             self.pc += 4
         elif semihost_no == 0x0c:  # flen
-            handle = self.load(ptr_fmt, self.x[self.a1], 0, notify=False)
+            handle = self.load(ptr_fmt, semihost_param, 0, notify=False)
             flen = 0
             #print(f'flen {handle} -> {flen}')
             self.x[self.a0] = flen
             self.pc += 4
         elif semihost_no == 0x09:  # istty
-            handle = self.load(ptr_fmt, self.x[self.a1], 0, notify=False)
+            handle = self.load(ptr_fmt, semihost_param, 0, notify=False)
             #print(f'istty {handle} -> 1')
             self.x[self.a0] = 1
             self.pc += 4
         elif semihost_no == 0x05:  # write
-            handle = self.load(ptr_fmt, self.x[self.a1], 0, notify=False)
-            ptr = self.load(ptr_fmt, self.x[self.a1]+ptr_bytes, 0, notify=False)
-            length = self.load(ptr_fmt, self.x[self.a1]+ptr_bytes*2, 0, notify=False)
+            handle = self.load(ptr_fmt, semihost_param, 0, notify=False)
+            ptr = self.load(ptr_fmt, semihost_param+ptr_bytes, 0, notify=False)
+            length = self.load(ptr_fmt, semihost_param+ptr_bytes*2, 0, notify=False)
             s = self.copy_out(ptr, length).decode()
             print(s, end='', flush=True)
             #print(f'write {hex(ptr)} {length}')
             self.x[self.a0] = 0
             self.pc += 4
         elif semihost_no == 0x02:  # close
-            handle = self.load(ptr_fmt, self.x[self.a1], 0, notify=False)
+            handle = self.load(ptr_fmt, semihost_param, 0, notify=False)
             #print(f'close {handle} -> 0')
             self.x[self.a0] = 0
             self.pc += 4
@@ -188,7 +189,8 @@ class semihosting(sim):
             self.x[self.a0] = 0
             self.exitcode = semihost_param != 0x20026  # exit 1 if not a normal application exit.
         else:
-            exit(0)
+            print(f'unknown semihost {hex(semihost_no)} {hex(semihost_param)} from {hex(self.op.addr)}')
+            return super()._ebreak()
 
 class htif(sim):  # Berkeley Host-Target Interface (HTIF)
     def __init__(self, elf_file, args=[], trace=False):

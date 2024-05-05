@@ -1,4 +1,4 @@
-test: test_mini32 test_mini64 test_mini32semi test_mini64semi run_riscv_tests run_riscof
+all: test_mini32 test_mini64 test_mini32semi test_mini64semi run_riscv_tests run_riscof run_coremark
 
 ############# riscv-software-src/riscv-tests
 
@@ -67,3 +67,14 @@ mini32semi: mini.c
 
 clean:
 	-rm mini32* mini64*
+
+
+######## coremark
+
+run_coremark: coremark/run2.log
+
+coremark/run2.log: coremark coremark_tinyrv_port/core_portme.c coremark_tinyrv_port/core_portme.h
+	make -C coremark PORT_DIR=../coremark_tinyrv_port clean run
+
+coremark:
+	git clone https://github.com/eembc/coremark.git

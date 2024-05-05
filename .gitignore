@@ -16,3 +16,4 @@ riscv-opcodes
 tests/riscof_work
 tests/riscv-arch-test
 tests/riscv-tests
+tests/coremark
