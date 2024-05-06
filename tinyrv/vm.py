@@ -1,4 +1,4 @@
-import sys, struct, time, dataclasses, argparse
+import sys, struct, time, argparse
 
 import lief
 import dataclasses_struct as dcs
