@@ -78,3 +78,17 @@ coremark/run2.log: coremark coremark_tinyrv_port/core_portme.c coremark_tinyrv_p
 
 coremark:
 	git clone https://github.com/eembc/coremark.git
+
+####### buildroot system building
+
+Image64: buildroot/output/images/Image
+	cp buildroot/output/images/Image Image64
+
+buildroot/output/images/Image: buildroot/.config
+	make -C buildroot
+
+buildroot/.config: buildroot br2_external_tinyrv/configs/tinyrv_defconfig
+	make -C buildroot BR2_EXTERNAL=../br2_external_tinyrv tinyrv_defconfig
+
+buildroot:
+	git clone https://gitlab.com/buildroot.org/buildroot.git
