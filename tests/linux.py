@@ -5,7 +5,7 @@ from tinyrv import sim, zext, sext
 
 # Heavily based on https://github.com/cnlohr/mini-rv32ima Big thanks to CNLohr!
 class rvlinux(sim):
-    def __init__(self, image, dtb, ram_size, command_line):
+    def __init__(self, image, dtb, ram_size, command_line=None):
         super().__init__(xlen=32, trap_misaligned=False)
         self.ram_size = ram_size
         self.ram_base = 0x8000_0000

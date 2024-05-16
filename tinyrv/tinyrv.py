@@ -52,16 +52,15 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
         def __repr__(self): return '\n'.join(['  '.join([f'x{r+rr:02d}({(iregs[r+rr])[-2:]})={xfmt(self.xlen, self._x[r+rr])}' for r in range(0, 32, 8)]) for rr in range(8)])
     def __init__(self, xlen=64, trap_misaligned=True):
         self.xlen, self.trap_misaligned, self.trace_log = xlen, trap_misaligned, []
-        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), [0]*32, [0]*4096, -1, 0, 3, 2<<20, collections.defaultdict(self.__makepage)
+        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), [0]*32, [0]*4096, -1, 0, 3, 2<<20, collections.defaultdict(functools.partial(bytearray, 2<<20))
         [setattr(self, n, i) for i, n in list(enumerate(iregs))]; [setattr(self, 'csr_'+n, i) for i, n in list(csrs.items())]  # convenience
-    def __makepage(self): return bytearray(self.mem_psize)
     def hook_csr(self, csr, reqval): return reqval if (csr&0xc00)!=0xc00 else self.csr[csr]
     def notify_stored(self, addr): pass  # called *after* mem store
     def notify_loading(self, addr): pass  # called *before* mem load
     def mtrap(self, tval, cause):
-        self.csr[self.csr_mtval], self.csr[self.csr_mepc], self.csr[self.csr_mcause], self.pc = zext(self.xlen,tval), self.op.addr, cause, zext(self.xlen,self.csr[self.csr_mtvec]&(~3))
-        if self.trace_log is not None: self.trace_log.append(f'mtrap cause={hex(cause)} tval={hex(tval)}')
-        self.csr[self.csr_mstatus] = ((self.csr[self.csr_mstatus]&0x08) << 4) | (self.current_mode << 11)
+        self.csr[self.csr_mtval], self.csr[self.csr_mepc], self.csr[self.csr_mcause], self.pc = zext(self.xlen,tval), self.op.addr, cause, zext(self.xlen,self.csr[self.csr_mtvec]&(~3))  # TODO: vectored interrupts
+        if self.trace_log is not None: self.trace_log.append(f'mtrap from_mode={self.current_mode} cause={hex(cause)} tval={hex(tval)}')
+        self.csr[self.csr_mstatus], self.current_mode = ((self.csr[self.csr_mstatus]&0x08) << 4) | (self.current_mode << 11), 3
     def page_and_offset_iter(self, addr, nbytes):
         while nbytes > 0:
             page, poffset = self.page_and_offset(zext(self.xlen, addr))
@@ -81,7 +80,7 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
         if notify: self.notify_stored(zext(self.xlen,addr))
     def load(self, format, addr, fallback=0, notify=True):
         if self.trap_misaligned and addr&(struct.calcsize(format)-1) != 0: self.mtrap(addr, 4); return fallback
-        addr = zext(self.xlen,addr)
+        addr = zext(self.xlen, addr)
         if notify: self.notify_loading(addr)
         data = struct.unpack_from(format, *self.page_and_offset(addr))[0]
         if self.trace_log is not None: self.trace_log.append(f'mem[{xfmt(self.xlen, addr)}]->{xfmt(struct.calcsize(format)*8, data)}')
