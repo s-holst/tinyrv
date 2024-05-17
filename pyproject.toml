@@ -31,10 +31,13 @@ build-backend = "hatchling.build"
 include = [
   "tinyrv",
   "tinyrv_opcodes_gen.py",
+  "tests/coremark_tinyrv_port",
+  "tests/br2_external_tinyrv",
   "tests/sail_cSim",
-  "tests/config.ini",
-  "tests/run_riscof.sh",
-  "tests/run_riscv_tests.py",
+  "tests/riscof_config32.ini",
+  "tests/riscof_config64.ini",
+  "tests/mini.c",
+  "tests/Makefile",
 ]
 
 [project.scripts]
