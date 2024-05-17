@@ -180,6 +180,7 @@ python3 tinyrv_opcodes_gen.py
 Some VMs use external libraries:
 - [lief](https://pypi.org/project/lief/) for loading ELFs
 - [readchar](https://pypi.org/project/readchar/) for reading keystrokes
+- [dataclasses-struct](https://pypi.org/project/dataclasses-struct/) for easier binary data manipulation
 
 ## Testing
 
@@ -226,24 +227,23 @@ spike  # test
 ```
 Then, run the tests:
 ```sh
-cd tests
-riscof --verbose info arch-test --clone
-./run_riscof.sh
+make -C tests run_riscof
 ```
+
 
 ### riscv-software-src/riscv-tests
 
 ```sh
-cd tests
-git clone https://github.com/riscv/riscv-tests
-cd riscv-tests
-git submodule update --init --recursive
-autoconf
-./configure
-make
-cd ..
-./run_riscv_tests.py
+make -C tests run_riscv_tests
 ```
+This will automatically clone and build the test suite if necessary.
+
+### Run Coremark
+
+```sh
+make -C tests run_coremark
+```
+This will automatically clone and build coremark if necessary.
 
 ### Boot Linux
 

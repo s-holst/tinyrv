@@ -18,5 +18,6 @@ tests/riscof_work
 tests/riscv-arch-test
 tests/riscv-tests
 tests/coremark
+tests/buildroot
 tests/mini32*
 tests/mini64*

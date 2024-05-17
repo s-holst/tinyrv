@@ -5,7 +5,7 @@ import dataclasses_struct as dcs
 
 from tinyrv import sim, zext
 
-def load_elf(vm, elf, trace=False):
+def load_elf(vm, elf, trace=False):  # TODO: relocations
     if trace:
         print(f'ELF symbol table:')
         for s in elf.symbols:
