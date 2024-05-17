@@ -247,11 +247,21 @@ This will automatically clone and build coremark if necessary.
 
 ### Boot Linux
 
+```bash
+make -C tests run_linux
 ```
-cd tests
-python3 linux.py
+Will download an Image and boot it.
+Boottime is about a minute on a reasonable fast machine and recent Python.
+
+The Image was made using [buildroot](https://buildroot.org).
+The configuration is based on qemu_riscv64_nommu_virt_defconfig with FPU, compressed instructions and other extensions turned off.
+
+To (re-)create this Image, run:
+```bash
+make -C tests Image
 ```
-Takes less than two minutes on a reasonable fast machine and recent python.
+This will download buildroot and build the kernel (takes some time).
+The build configuration is in tests/br2_external_tinyrv.
 
 ## Related
 

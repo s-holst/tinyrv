@@ -19,5 +19,7 @@ tests/riscv-arch-test
 tests/riscv-tests
 tests/coremark
 tests/buildroot
+tests/tinyrv-test-blobs
+tests/buildroot
 tests/mini32*
 tests/mini64*

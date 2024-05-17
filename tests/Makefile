@@ -79,10 +79,18 @@ coremark/run2.log: coremark coremark_tinyrv_port/core_portme.c coremark_tinyrv_p
 coremark:
 	git clone https://github.com/eembc/coremark.git
 
+####### boot pre-compiled linux
+
+run_linux: tinyrv-test-blobs
+	tinyrv-system-virt -k tinyrv-test-blobs/linux-6.6.18-rv64-nommu/Image
+
+tinyrv-test-blobs:
+	git clone https://github.com/s-holst/tinyrv-test-blobs.git
+
 ####### buildroot system building
 
-Image64: buildroot/output/images/Image
-	cp buildroot/output/images/Image Image64
+Image: buildroot/output/images/Image
+	cp buildroot/output/images/Image Image
 
 buildroot/output/images/Image: buildroot/.config
 	make -C buildroot
