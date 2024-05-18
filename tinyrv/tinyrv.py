@@ -13,7 +13,20 @@ class rvop:
         if self.name in 'lb,lh,lw,ld,lbu,lhu,lwu,sb,sh,sw,sd,jalr'.split(','): args = [iregs[self.rd] if 'rd' in self.args else iregs[self.rs2], f"{self.imm12}({iregs[self.rs1]})"]
         elif self.name[:3] == 'csr': args = [iregs[self.rd], csrs.get(self.csr, hex(self.csr)), iregs[self.rs1] if 'rs1' in self.args else f'{hex(self.zimm) if abs(self.zimm) > 255 else self.zimm}']
         elif self.name[:5] == 'fence': args = [''.join(c for c, b in zip([*'iorw'], [i=='1' for i in f'{self.args[name]:04b}']) if b) for name in ('pred', 'succ') if name in self.args] + [f'fm={self.fm:04b}' if 'fm' in self.args else None]
-        elif (self.name[:2] == 'c_') or (self.name[0] == 'f'): args = [f'{k}={v}' for k, v in self.args.items()]  # TODO: compressed and fp ops
+        elif (self.name[:3] == 'c_f') or (self.name[0] == 'f'): args = [f'{k}={v}' for k, v in self.args.items()]  # TODO: fp ops
+        elif 'rd_rs1_p' in self.args: args = [iregs[self.rd_rs1_p+8], iregs[self.rs2_p+8] if 'rs2_p' in self.args else f'{self.nzuimm6}' if 'nzuimm6' in self.args else f'{self.imm6}' if 'imm6' in self.args else None]
+        elif 'rd_rs1_n0' in self.args: args = [iregs[self.rd_rs1_n0], iregs[self.rs2_n0] if 'rs2_n0' in self.args else f'{self.nzuimm6}' if 'nzuimm6' in self.args else f'{self.nzimm6}' if 'nzimm6' in self.args else f'{self.imm6}' if 'imm6' in self.args else None]
+        elif 'rd_n0' in self.args: args = [iregs[self.rd_n0], f'{self.imm6}' if 'imm6' in self.args else f'{hex(self.uimm8sp)}(sp)' if 'uimm8sp' in self.args else f'{hex(self.uimm9sp)}(sp)' if 'uimm9sp' in self.args else iregs[self.rs2_n0]]
+        elif self.name in {'c_sw', 'c_sd', 'c_lw', 'c_ld'}: args = [iregs[self.rs2_p+8] if 'rs2_p' in self.args else iregs[self.rd_p+8], (f'{self.uimm7}' if 'uimm7' in self.args else f'{self.uimm8}') + f'({iregs[self.rs1_p+8]})']
+        elif self.name == 'c_lui': args = [iregs[self.rd_n2], hex(self.nzimm18)]
+        elif self.name == 'c_swsp': args = [iregs[self.rs2], f'{hex(self.uimm8sp_s)}(sp)']
+        elif self.name == 'c_sdsp': args = [iregs[self.rs2], f'{hex(self.uimm9sp_s)}(sp)']
+        elif self.name == 'c_addi4spn': args = [iregs[self.rd_p+8], hex(self.nzuimm10)]
+        elif self.name == 'c_addi16sp': args = [hex(self.nzimm10)]
+        elif self.name == 'c_jalr': args = ['ra', iregs[self.rs1_n0]]
+        elif self.name == 'c_jr': args = [iregs[self.rs1_n0]]
+        elif self.name == 'c_j': args = [hex(self.imm12)]
+        elif self.name in {'c_beqz', 'c_bnez'}: args = [iregs[self.rs1_p+8], f'{self.bimm9}']
         elif self.name == 'jal' or ('bimm12' in self.args): args = [iregs[self.rd] if 'rd' in self.args else None, iregs[self.rs1] if 'rs1' in self.args else None, iregs[self.rs2] if 'rs2' in self.args else None, hex(zext(64, self.addr+(self.jimm20 if 'jimm20' in self.args else self.bimm12)))]
         elif ('rd' in self.args) and ('rs1' in self.args): args = [iregs[self.rd], iregs[self.rs1], iregs[self.rs2] if 'rs2' in self.args else None, *[f'{hex(self.args[name]) if abs(self.args[name]) > 255 else self.args[name]}' for name in ('imm12','shamtw','shamtd') if name in self.args]]
         elif ('rd' in self.args) and ('imm20' in self.args): args = [iregs[self.rd], hex(zext(32,self.imm20) if 'l' in self.name else self.imm20) if abs(self.imm20) > 255 else f'{self.imm20}']
@@ -29,9 +42,9 @@ def rvsplitter(*data, base=0, lower16=0):  # yields addresses and 32-bit/16-bit(
         else: yield int(base)+addr*2, instr[0]
 
 @functools.lru_cache(maxsize=4096)
-def decode(instr, addr=0):  # decodes one instruction
+def decode(instr, addr=0, xlen=64):  # decodes one instruction
     o = rvop(addr=addr, data=instr, name=customs.get(instr&0b1111111,'UNKNOWN'), args={})
-    for mask, m_dict in mask_match:
+    for mask, m_dict in mask_match_rv64 if xlen==64 else mask_match_rv32:
         if op := m_dict.get(instr&mask, None):
             o.args = dict((vf, getter(instr)) for vf, getter in op['arg_getter'].items())
             [setattr(o,k,v) for k,v in (op|o.args).items()]
@@ -52,7 +65,7 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
         def __repr__(self): return '\n'.join(['  '.join([f'x{r+rr:02d}({(iregs[r+rr])[-2:]})={xfmt(self.xlen, self._x[r+rr])}' for r in range(0, 32, 8)]) for rr in range(8)])
     def __init__(self, xlen=64, trap_misaligned=True):
         self.xlen, self.trap_misaligned, self.trace_log = xlen, trap_misaligned, []
-        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), [0]*32, [0]*4096, -1, 0, 3, 2<<20, collections.defaultdict(functools.partial(bytearray, 2<<20))
+        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), [0]*32, [0]*4096, -1, 0, 3, 2<<20, collections.defaultdict(functools.partial(bytearray, 2<<20+2))  # 2-byte overlap for loading unaligned 32-bit opcodes
         [setattr(self, n, i) for i, n in list(enumerate(iregs))]; [setattr(self, 'csr_'+n, i) for i, n in list(csrs.items())]  # convenience
     def hook_csr(self, csr, reqval): return reqval if (csr&0xc00)!=0xc00 else self.csr[csr]
     def notify_stored(self, addr): pass  # called *after* mem store
@@ -64,7 +77,8 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def page_and_offset_iter(self, addr, nbytes):
         while nbytes > 0:
             page, poffset = self.page_and_offset(zext(self.xlen, addr))
-            yield page, poffset, (current := min(nbytes, self.mem_psize - poffset))
+            yield page, poffset, min(nbytes, self.mem_psize + 2 - poffset)  # 2 bytes more to fill overlap
+            current = min(nbytes, self.mem_psize - poffset)
             addr, nbytes = addr+current, nbytes-current
     def copy_in(self, addr, bytes, doffset=0):
         for page, offset, chunk in self.page_and_offset_iter(addr, len(bytes)): page[offset:offset+chunk] = bytes[doffset:(doffset:=doffset+chunk)]
@@ -87,110 +101,147 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
         return data
     def idiv2zero(self, a, b): return -(-a // b) if (a < 0) ^ (b < 0) else a // b
     def rem2zero(self, a, b): return a - b * self.idiv2zero(a, b)
-    def _auipc    (self, rd, imm20,        **_): self.pc+=4; self.x[rd] = sext(self.xlen, self.op.addr+imm20)
-    def _lui      (self, rd, imm20,        **_): self.pc+=4; self.x[rd] = imm20
-    def _jal      (self, rd, jimm20,       **_): self.pc, self.x[rd] = zext(self.xlen, self.op.addr+jimm20),    sext(self.xlen, self.op.addr+4)
-    def _jalr     (self, rd, rs1, imm12,   **_): self.pc, self.x[rd] = zext(self.xlen, self.x[rs1]+imm12)&(~1), sext(self.xlen, self.op.addr+4) # LSB=0
-    def _beq      (self, rs1, rs2, bimm12, **_): self.pc = (self.op.addr+bimm12) if self.x[rs1] == self.x[rs2] else self.op.addr+4
-    def _bne      (self, rs1, rs2, bimm12, **_): self.pc = (self.op.addr+bimm12) if self.x[rs1] != self.x[rs2] else self.op.addr+4
-    def _blt      (self, rs1, rs2, bimm12, **_): self.pc = (self.op.addr+bimm12) if self.x[rs1] <  self.x[rs2] else self.op.addr+4
-    def _bge      (self, rs1, rs2, bimm12, **_): self.pc = (self.op.addr+bimm12) if self.x[rs1] >= self.x[rs2] else self.op.addr+4
-    def _bltu     (self, rs1, rs2, bimm12, **_): self.pc = (self.op.addr+bimm12) if zext(self.xlen, self.x[rs1]) <  zext(self.xlen, self.x[rs2]) else self.op.addr+4
-    def _bgeu     (self, rs1, rs2, bimm12, **_): self.pc = (self.op.addr+bimm12) if zext(self.xlen, self.x[rs1]) >= zext(self.xlen, self.x[rs2]) else self.op.addr+4
-    def _sb       (self, rs1, rs2, imm12,  **_): self.pc+=4; self.store('B', self.x[rs1]+imm12, zext( 8,self.x[rs2]))
-    def _sh       (self, rs1, rs2, imm12,  **_): self.pc+=4; self.store('H', self.x[rs1]+imm12, zext(16,self.x[rs2]))
-    def _sw       (self, rs1, rs2, imm12,  **_): self.pc+=4; self.store('I', self.x[rs1]+imm12, zext(32,self.x[rs2]))
-    def _sd       (self, rs1, rs2, imm12,  **_): self.pc+=4; self.store('Q', self.x[rs1]+imm12, zext(64,self.x[rs2]))
-    def _lb       (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('b', self.x[rs1]+imm12, self.x[rd])
-    def _lbu      (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('B', self.x[rs1]+imm12, self.x[rd])
-    def _lh       (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('h', self.x[rs1]+imm12, self.x[rd])
-    def _lw       (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('i', self.x[rs1]+imm12, self.x[rd])
-    def _ld       (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('q', self.x[rs1]+imm12, self.x[rd])
-    def _lhu      (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('H', self.x[rs1]+imm12, self.x[rd])
-    def _lwu      (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = self.load('I', self.x[rs1]+imm12, self.x[rd])
-    def _addi     (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  +          imm12)
-    def _xori     (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  ^          imm12)
-    def _ori      (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  |          imm12)
-    def _andi     (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  &          imm12)
-    def _addiw    (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = sext(32,          self.x[rs1]  +          imm12)
-    def _addw     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32, sext(32, self.x[rs1]) + sext(32, self.x[rs2]))
-    def _subw     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32, sext(32, self.x[rs1]) - sext(32, self.x[rs2]))
-    def _add      (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  +          self.x[rs2])
-    def _sub      (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  -          self.x[rs2])
-    def _xor      (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  ^          self.x[rs2])
-    def _or       (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  |          self.x[rs2])
-    def _and      (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  &          self.x[rs2])
-    def _sltiu    (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] = zext(self.xlen,   self.x[rs1]) < zext(self.xlen, imm12)
-    def _sltu     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = zext(self.xlen,   self.x[rs1]) < zext(self.xlen, self.x[rs2])
-    def _slti     (self, rd, rs1, imm12,   **_): self.pc+=4; self.x[rd] =                   self.x[rs1]  <                 imm12
-    def _slt      (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] =                   self.x[rs1]  <                 self.x[rs2]
-    def _slliw    (self, rd, rs1, shamtw,  **_): self.pc+=4; self.x[rd] = sext(32,                        self.x[rs1]  << shamtw)
-    def _srliw    (self, rd, rs1, shamtw,  **_): self.pc+=4; self.x[rd] = sext(32,        zext(32,        self.x[rs1]) >> shamtw)
-    def _sraiw    (self, rd, rs1, shamtw,  **_): self.pc+=4; self.x[rd] = sext(32,        sext(32,        self.x[rs1]) >> shamtw)
-    def _slli     (self, rd, rs1, shamtd,  **_): self.pc+=4; self.x[rd] = sext(self.xlen,                 self.x[rs1]  << shamtd)  # shared with RV64I
-    def _srai     (self, rd, rs1, shamtd,  **_): self.pc+=4; self.x[rd] = sext(self.xlen,                 self.x[rs1]  >> shamtd)  # shared with RV64I
-    def _srli     (self, rd, rs1, shamtd,  **_): self.pc+=4; self.x[rd] = sext(self.xlen, zext(self.xlen, self.x[rs1]) >> shamtd)  # shared with RV64I
-    def _sll      (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen,                 self.x[rs1]  << (self.x[rs2]&(self.xlen-1)))
-    def _srl      (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen, zext(self.xlen, self.x[rs1]) >> (self.x[rs2]&(self.xlen-1)))
-    def _sra      (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen,                 self.x[rs1]  >> (self.x[rs2]&(self.xlen-1)))
-    def _sllw     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32,        sext(32,        self.x[rs1]) << (self.x[rs2]&31))
-    def _srlw     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32,        zext(32,        self.x[rs1]) >> (self.x[rs2]&31))
-    def _sraw     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32,        sext(32,        self.x[rs1]) >> (self.x[rs2]&31))
-    def _fence    (self,                   **_): self.pc+=4
-    def _fence_i  (self,                   **_): self.pc+=4
-    def _csrrw    (self, rd, csr, rs1,     **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.x[rs1]               )
-    def _csrrs    (self, rd, csr, rs1,     **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]| self.x[rs1])
-    def _csrrc    (self, rd, csr, rs1,     **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]&~self.x[rs1])
-    def _csrrwi   (self, rd, csr, zimm,    **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, zimm                      )
-    def _csrrsi   (self, rd, csr, zimm,    **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]| zimm       )
-    def _csrrci   (self, rd, csr, zimm,    **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]&~zimm       )
-    def _mret     (self,                   **_): self.pc = zext(self.xlen, self.csr[self.csr_mepc]); mmode = (self.csr[self.csr_mstatus]>>11)&3; self.csr[self.csr_mstatus] = (self.current_mode << 11) | 0x80 | ((self.csr[self.csr_mstatus]&0x80) >> 4); self.current_mode = mmode
-    def _ecall    (self,                   **_): self.mtrap(0, 8 if self.current_mode == 0 else 11)
-    def _ebreak   (self,                   **_): self.mtrap(self.op.addr, 3)
-    def _mul      (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )           )
-    def _mulh     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )>>self.xlen)
-    def _mulhu    (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen, (zext(self.xlen, self.x[rs1]) * zext(self.xlen, self.x[rs2]))>>self.xlen)
-    def _mulhsu   (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  * zext(self.xlen, self.x[rs2]))>>self.xlen)
-    def _div      (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen, (self.idiv2zero( self.x[rs1]  ,                 self.x[rs2]))           ) if self.x[rs2] != 0 else -1
-    def _divu     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen, (zext(self.xlen, self.x[rs1]) //zext(self.xlen, self.x[rs2]))           ) if self.x[rs2] != 0 else -1
-    def _rem      (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen, (self.rem2zero ( self.x[rs1]  ,                 self.x[rs2]))           ) if self.x[rs2] != 0 else self.x[rs1]
-    def _remu     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(self.xlen, (zext(self.xlen, self.x[rs1]) % zext(self.xlen, self.x[rs2]))           ) if self.x[rs2] != 0 else self.x[rs1]
-    def _mulw     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32,        (sext(32,        self.x[rs1]) * sext(32,        self.x[rs2]))           )
-    def _divw     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32, (self.idiv2zero(sext(32,self.x[rs1]) , sext(32,        self.x[rs2])))          ) if sext(32,self.x[rs2]) != 0 else -1
-    def _divuw    (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32, (self.idiv2zero(zext(32,self.x[rs1]) , zext(32,        self.x[rs2])))          ) if sext(32,self.x[rs2]) != 0 else -1
-    def _remw     (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32, (self.rem2zero (sext(32,self.x[rs1]) , sext(32,        self.x[rs2])))          ) if sext(32,self.x[rs2]) != 0 else sext(32,self.x[rs1])
-    def _remuw    (self, rd, rs1, rs2,     **_): self.pc+=4; self.x[rd] = sext(32, (self.rem2zero (zext(32,self.x[rs1]) , zext(32,        self.x[rs2])))          ) if sext(32,self.x[rs2]) != 0 else sext(32,self.x[rs1])
-    def _amoswap_w(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1,                            sext(32,ors2)  ); self.x[rd]=tmp
-    def _amoadd_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32,             tmp + sext(32,ors2)) ); self.x[rd]=tmp
-    def _amoand_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32,             tmp & sext(32,ors2)) ); self.x[rd]=tmp
-    def _amoor_w  (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32,             tmp | sext(32,ors2)) ); self.x[rd]=tmp
-    def _amoxor_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32,             tmp ^ sext(32,ors2)) ); self.x[rd]=tmp
-    def _amomax_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32, max(        tmp , sext(32,ors2)))); self.x[rd]=tmp
-    def _amomin_w (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32, min(        tmp , sext(32,ors2)))); self.x[rd]=tmp
-    def _amomaxu_w(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32, max(zext(32,tmp), zext(32,ors2)))); self.x[rd]=tmp
-    def _amominu_w(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32, min(zext(32,tmp), zext(32,ors2)))); self.x[rd]=tmp
-    def _amoswap_d(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1,                                    ors2,  ); self.x[rd]=tmp
-    def _amoadd_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64,             tmp +         ors2 ) ); self.x[rd]=tmp
-    def _amoand_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64,             tmp &         ors2 ) ); self.x[rd]=tmp
-    def _amoor_d  (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64,             tmp |         ors2 ) ); self.x[rd]=tmp
-    def _amoxor_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64,             tmp ^         ors2 ) ); self.x[rd]=tmp
-    def _amomax_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, max(        tmp , sext(64,ors2)))); self.x[rd]=tmp
-    def _amomin_d (self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, min(        tmp , sext(64,ors2)))); self.x[rd]=tmp
-    def _amomaxu_d(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, max(zext(64,tmp), zext(64,ors2)))); self.x[rd]=tmp
-    def _amominu_d(self, rd, rs1, rs2,     **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, min(zext(64,tmp), zext(64,ors2)))); self.x[rd]=tmp
-    def _lr_w     (self, rd, rs1,          **_): self.pc+=4; self.lr_res_addr = self.x[rs1]; self.x[rd] = self.load('i', self.x[rs1], self.x[rd])
-    def _sc_w     (self, rd, rs1, rs2,     **_):
+    def _auipc     (self, rd, imm20,          **_): self.pc+=4; self.x[rd] = sext(self.xlen, self.op.addr+imm20)
+    def _lui       (self, rd, imm20,          **_): self.pc+=4; self.x[rd] = imm20
+    def _jal       (self, rd, jimm20,         **_): self.pc, self.x[rd] = zext(self.xlen, self.op.addr+jimm20),    sext(self.xlen, self.op.addr+4)
+    def _jalr      (self, rd, rs1, imm12,     **_): self.pc, self.x[rd] = zext(self.xlen, self.x[rs1]+imm12)&(~1), sext(self.xlen, self.op.addr+4) # LSB=0
+    def _beq       (self, rs1, rs2, bimm12,   **_): self.pc = (self.op.addr+bimm12) if self.x[rs1] == self.x[rs2] else self.op.addr+4
+    def _bne       (self, rs1, rs2, bimm12,   **_): self.pc = (self.op.addr+bimm12) if self.x[rs1] != self.x[rs2] else self.op.addr+4
+    def _blt       (self, rs1, rs2, bimm12,   **_): self.pc = (self.op.addr+bimm12) if self.x[rs1] <  self.x[rs2] else self.op.addr+4
+    def _bge       (self, rs1, rs2, bimm12,   **_): self.pc = (self.op.addr+bimm12) if self.x[rs1] >= self.x[rs2] else self.op.addr+4
+    def _bltu      (self, rs1, rs2, bimm12,   **_): self.pc = (self.op.addr+bimm12) if zext(self.xlen, self.x[rs1]) <  zext(self.xlen, self.x[rs2]) else self.op.addr+4
+    def _bgeu      (self, rs1, rs2, bimm12,   **_): self.pc = (self.op.addr+bimm12) if zext(self.xlen, self.x[rs1]) >= zext(self.xlen, self.x[rs2]) else self.op.addr+4
+    def _sb        (self, rs1, rs2, imm12,    **_): self.pc+=4; self.store('B', self.x[rs1]+imm12, zext( 8,self.x[rs2]))
+    def _sh        (self, rs1, rs2, imm12,    **_): self.pc+=4; self.store('H', self.x[rs1]+imm12, zext(16,self.x[rs2]))
+    def _sw        (self, rs1, rs2, imm12,    **_): self.pc+=4; self.store('I', self.x[rs1]+imm12, zext(32,self.x[rs2]))
+    def _sd        (self, rs1, rs2, imm12,    **_): self.pc+=4; self.store('Q', self.x[rs1]+imm12, zext(64,self.x[rs2]))
+    def _lb        (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] = self.load('b', self.x[rs1]+imm12, self.x[rd])
+    def _lbu       (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] = self.load('B', self.x[rs1]+imm12, self.x[rd])
+    def _lh        (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] = self.load('h', self.x[rs1]+imm12, self.x[rd])
+    def _lw        (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] = self.load('i', self.x[rs1]+imm12, self.x[rd])
+    def _ld        (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] = self.load('q', self.x[rs1]+imm12, self.x[rd])
+    def _lhu       (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] = self.load('H', self.x[rs1]+imm12, self.x[rd])
+    def _lwu       (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] = self.load('I', self.x[rs1]+imm12, self.x[rd])
+    def _addi      (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  +          imm12)
+    def _xori      (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  ^          imm12)
+    def _ori       (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  |          imm12)
+    def _andi      (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  &          imm12)
+    def _addiw     (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] = sext(32,          self.x[rs1]  +          imm12)
+    def _addw      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(32, sext(32, self.x[rs1]) + sext(32, self.x[rs2]))
+    def _subw      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(32, sext(32, self.x[rs1]) - sext(32, self.x[rs2]))
+    def _add       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  +          self.x[rs2])
+    def _sub       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  -          self.x[rs2])
+    def _xor       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  ^          self.x[rs2])
+    def _or        (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  |          self.x[rs2])
+    def _and       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen,   self.x[rs1]  &          self.x[rs2])
+    def _sltiu     (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] = zext(self.xlen,   self.x[rs1]) < zext(self.xlen, imm12)
+    def _sltu      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = zext(self.xlen,   self.x[rs1]) < zext(self.xlen, self.x[rs2])
+    def _slti      (self, rd, rs1, imm12,     **_): self.pc+=4; self.x[rd] =                   self.x[rs1]  <                 imm12
+    def _slt       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] =                   self.x[rs1]  <                 self.x[rs2]
+    def _slliw     (self, rd, rs1, shamtw,    **_): self.pc+=4; self.x[rd] = sext(32,                        self.x[rs1]  << shamtw)
+    def _srliw     (self, rd, rs1, shamtw,    **_): self.pc+=4; self.x[rd] = sext(32,        zext(32,        self.x[rs1]) >> shamtw)
+    def _sraiw     (self, rd, rs1, shamtw,    **_): self.pc+=4; self.x[rd] = sext(32,        sext(32,        self.x[rs1]) >> shamtw)
+    def _slli      (self, rd, rs1, shamtd,    **_): self.pc+=4; self.x[rd] = sext(self.xlen,                 self.x[rs1]  << shamtd)  # shared with RV64I
+    def _srai      (self, rd, rs1, shamtd,    **_): self.pc+=4; self.x[rd] = sext(self.xlen,                 self.x[rs1]  >> shamtd)  # shared with RV64I
+    def _srli      (self, rd, rs1, shamtd,    **_): self.pc+=4; self.x[rd] = sext(self.xlen, zext(self.xlen, self.x[rs1]) >> shamtd)  # shared with RV64I
+    def _sll       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen,                 self.x[rs1]  << (self.x[rs2]&(self.xlen-1)))
+    def _srl       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, zext(self.xlen, self.x[rs1]) >> (self.x[rs2]&(self.xlen-1)))
+    def _sra       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen,                 self.x[rs1]  >> (self.x[rs2]&(self.xlen-1)))
+    def _sllw      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(32,        sext(32,        self.x[rs1]) << (self.x[rs2]&31))
+    def _srlw      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(32,        zext(32,        self.x[rs1]) >> (self.x[rs2]&31))
+    def _sraw      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(32,        sext(32,        self.x[rs1]) >> (self.x[rs2]&31))
+    def _fence     (self,                     **_): self.pc+=4
+    def _fence_i   (self,                     **_): self.pc+=4
+    def _csrrw     (self, rd, csr, rs1,       **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.x[rs1]               )
+    def _csrrs     (self, rd, csr, rs1,       **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]| self.x[rs1])
+    def _csrrc     (self, rd, csr, rs1,       **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]&~self.x[rs1])
+    def _csrrwi    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, zimm                      )
+    def _csrrsi    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]| zimm       )
+    def _csrrci    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]&~zimm       )
+    def _mret      (self,                     **_): self.pc = zext(self.xlen, self.csr[self.csr_mepc]); mmode = (self.csr[self.csr_mstatus]>>11)&3; self.csr[self.csr_mstatus] = (self.current_mode << 11) | 0x80 | ((self.csr[self.csr_mstatus]&0x80) >> 4); self.current_mode = mmode
+    def _ecall     (self,                     **_): self.mtrap(0, 8 if self.current_mode == 0 else 11)
+    def _ebreak    (self,                     **_): self.mtrap(self.op.addr, 3)
+    def _mul       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )           )
+    def _mulh      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )>>self.xlen)
+    def _mulhu     (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (zext(self.xlen, self.x[rs1]) * zext(self.xlen, self.x[rs2]))>>self.xlen)
+    def _mulhsu    (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  * zext(self.xlen, self.x[rs2]))>>self.xlen)
+    def _div       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (self.idiv2zero( self.x[rs1]  ,                 self.x[rs2]))           ) if self.x[rs2] != 0 else -1
+    def _divu      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (zext(self.xlen, self.x[rs1]) //zext(self.xlen, self.x[rs2]))           ) if self.x[rs2] != 0 else -1
+    def _rem       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (self.rem2zero ( self.x[rs1]  ,                 self.x[rs2]))           ) if self.x[rs2] != 0 else self.x[rs1]
+    def _remu      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (zext(self.xlen, self.x[rs1]) % zext(self.xlen, self.x[rs2]))           ) if self.x[rs2] != 0 else self.x[rs1]
+    def _mulw      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(32,        (sext(32,        self.x[rs1]) * sext(32,        self.x[rs2]))           )
+    def _divw      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(32, (self.idiv2zero(sext(32,self.x[rs1]) , sext(32,        self.x[rs2])))          ) if sext(32,self.x[rs2]) != 0 else -1
+    def _divuw     (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(32, (self.idiv2zero(zext(32,self.x[rs1]) , zext(32,        self.x[rs2])))          ) if sext(32,self.x[rs2]) != 0 else -1
+    def _remw      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(32, (self.rem2zero (sext(32,self.x[rs1]) , sext(32,        self.x[rs2])))          ) if sext(32,self.x[rs2]) != 0 else sext(32,self.x[rs1])
+    def _remuw     (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(32, (self.rem2zero (zext(32,self.x[rs1]) , zext(32,        self.x[rs2])))          ) if sext(32,self.x[rs2]) != 0 else sext(32,self.x[rs1])
+    def _amoswap_w (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1,                            sext(32,ors2)  ); self.x[rd]=tmp
+    def _amoadd_w  (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32,             tmp + sext(32,ors2)) ); self.x[rd]=tmp
+    def _amoand_w  (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32,             tmp & sext(32,ors2)) ); self.x[rd]=tmp
+    def _amoor_w   (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32,             tmp | sext(32,ors2)) ); self.x[rd]=tmp
+    def _amoxor_w  (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32,             tmp ^ sext(32,ors2)) ); self.x[rd]=tmp
+    def _amomax_w  (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32, max(        tmp , sext(32,ors2)))); self.x[rd]=tmp
+    def _amomin_w  (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32, min(        tmp , sext(32,ors2)))); self.x[rd]=tmp
+    def _amomaxu_w (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32, max(zext(32,tmp), zext(32,ors2)))); self.x[rd]=tmp
+    def _amominu_w (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('i', self.x[rs1], self.x[rd]); self.store('i', ors1, sext(32, min(zext(32,tmp), zext(32,ors2)))); self.x[rd]=tmp
+    def _amoswap_d (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1,                                    ors2,  ); self.x[rd]=tmp
+    def _amoadd_d  (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64,             tmp +         ors2 ) ); self.x[rd]=tmp
+    def _amoand_d  (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64,             tmp &         ors2 ) ); self.x[rd]=tmp
+    def _amoor_d   (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64,             tmp |         ors2 ) ); self.x[rd]=tmp
+    def _amoxor_d  (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64,             tmp ^         ors2 ) ); self.x[rd]=tmp
+    def _amomax_d  (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, max(        tmp , sext(64,ors2)))); self.x[rd]=tmp
+    def _amomin_d  (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, min(        tmp , sext(64,ors2)))); self.x[rd]=tmp
+    def _amomaxu_d (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, max(zext(64,tmp), zext(64,ors2)))); self.x[rd]=tmp
+    def _amominu_d (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, min(zext(64,tmp), zext(64,ors2)))); self.x[rd]=tmp
+    def _lr_w      (self, rd, rs1,            **_): self.pc+=4; self.lr_res_addr = self.x[rs1]; self.x[rd] = self.load('i', self.x[rs1], self.x[rd])
+    def _sc_w      (self, rd, rs1, rs2,       **_):
         if self.lr_res_addr == self.x[rs1]: self.pc+=4; self.lr_res_addr = -1; self.store('i', self.x[rs1], sext(32, self.x[rs2])); self.x[rd] = 0
         else:                               self.pc+=4; self.lr_res_addr = -1;                                                      self.x[rd] = 1
-    def _lr_d     (self, rd, rs1,          **_): self.pc+=4; self.lr_res_addr = self.x[rs1]; self.x[rd] = self.load('q', self.x[rs1], self.x[rd])
-    def _sc_d     (self, rd, rs1, rs2,     **_):
+    def _lr_d      (self, rd, rs1,            **_): self.pc+=4; self.lr_res_addr = self.x[rs1]; self.x[rd] = self.load('q', self.x[rs1], self.x[rd])
+    def _sc_d      (self, rd, rs1, rs2,       **_):
         if self.lr_res_addr == self.x[rs1]: self.pc+=4; self.lr_res_addr = -1; self.store('q', self.x[rs1], sext(64, self.x[rs2])); self.x[rd] = 0
         else:                               self.pc+=4; self.lr_res_addr = -1;                                                      self.x[rd] = 1
-    def _c_addi  (self, rd_rs1_n0, nzimm6, **_): self.pc+=2; self.x[rd_rs1_n0] += nzimm6  # c.nop required to pass test rv32i_m/privilege/src/misalign-jal-01.S
+    def _c_nop     (self,                     **_): self.pc+=2;  # c.nop also required to pass test rv32i_m/privilege/src/misalign-jal-01.S
+    def _c_mv      (self, rd_n0, rs2_n0,      **_): self.pc+=2; self.x[rd_n0] = self.x[rs2_n0]
+    def _c_add     (self, rd_rs1_n0, rs2_n0,  **_): self.pc+=2; self.x[rd_rs1_n0] =  sext(self.xlen, self.x[rd_rs1_n0] + self.x[rs2_n0])
+    def _c_and     (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, self.x[rd_rs1_p+8] & self.x[rs2_p+8])
+    def _c_or      (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, self.x[rd_rs1_p+8] | self.x[rs2_p+8])
+    def _c_xor     (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, self.x[rd_rs1_p+8] ^ self.x[rs2_p+8])
+    def _c_sub     (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, self.x[rd_rs1_p+8] - self.x[rs2_p+8])
+    def _c_addw    (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(32, self.x[rd_rs1_p+8] + self.x[rs2_p+8])
+    def _c_subw    (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(32, self.x[rd_rs1_p+8] - self.x[rs2_p+8])
+    def _c_addi4spn(self, rd_p, nzuimm10,     **_): self.pc+=2; self.x[rd_p+8] = self.x[2] + nzuimm10
+    def _c_li      (self, rd_n0, imm6,        **_): self.pc+=2; self.x[rd_n0] = imm6
+    def _c_lui     (self, rd_n2, nzimm18,     **_): self.pc+=2; self.x[rd_n2] = nzimm18
+    def _c_swsp    (self, rs2, uimm8sp_s,     **_): self.pc+=2; self.store('I', self.x[2]+uimm8sp_s, zext(32,self.x[rs2]))
+    def _c_sdsp    (self, rs2, uimm9sp_s,     **_): self.pc+=2; self.store('Q', self.x[2]+uimm9sp_s, zext(64,self.x[rs2]))
+    def _c_addi    (self, rd_rs1_n0, nzimm6,  **_): self.pc+=2; self.x[rd_rs1_n0] = sext(self.xlen, self.x[rd_rs1_n0] + nzimm6)
+    def _c_addiw   (self, rd_rs1_n0, imm6,    **_): self.pc+=2; self.x[rd_rs1_n0] = sext(32, self.x[rd_rs1_n0] + imm6)
+    def _c_andi    (self, rd_rs1_p, imm6,     **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, self.x[rd_rs1_p+8] & imm6)
+    def _c_sw      (self, rs1_p,rs2_p, uimm7, **_): self.pc+=2; self.store('I', self.x[rs1_p+8]+uimm7, zext(32,self.x[rs2_p+8]))
+    def _c_sd      (self, rs1_p,rs2_p, uimm8, **_): self.pc+=2; self.store('Q', self.x[rs1_p+8]+uimm8, zext(64,self.x[rs2_p+8]))
+    def _c_addi16sp(self, nzimm10,            **_): self.pc+=2; self.x[2] += nzimm10
+    def _c_ebreak  (self,                     **_): self.mtrap(self.op.addr, 3)
+    def _c_jalr    (self, rs1_n0,             **_): self.pc, self.x[1] = zext(self.xlen, self.x[rs1_n0])&(~1), sext(self.xlen, self.op.addr+2) # LSB=0
+    def _c_jr      (self, rs1_n0,             **_): self.pc = zext(self.xlen, self.x[rs1_n0])&(~1) # LSB=0
+    def _c_j       (self, imm12,              **_): self.pc = zext(self.xlen, self.op.addr+imm12)
+    def _c_jal     (self, imm12,              **_): self.pc, self.x[1] = zext(self.xlen, self.op.addr+imm12), sext(self.xlen, self.op.addr+2)
+    def _c_lw      (self, rd_p, rs1_p, uimm7, **_): self.pc+=2; self.x[rd_p+8] = self.load('i', self.x[rs1_p+8]+uimm7, self.x[rd_p+8])
+    def _c_ld      (self, rd_p, rs1_p, uimm8, **_): self.pc+=2; self.x[rd_p+8] = self.load('q', self.x[rs1_p+8]+uimm8, self.x[rd_p+8])
+    def _c_lwsp    (self, rd_n0, uimm8sp,     **_): self.pc+=2; self.x[rd_n0] = self.load('i', self.x[2]+uimm8sp, self.x[rd_n0])
+    def _c_ldsp    (self, rd_n0, uimm9sp,     **_): self.pc+=2; self.x[rd_n0] = self.load('q', self.x[2]+uimm9sp, self.x[rd_n0])
+    def _c_slli    (self, rd_rs1_n0, nzuimm6, **_): self.pc+=2; self.x[rd_rs1_n0] = sext(self.xlen,   self.x[rd_rs1_n0]  << nzuimm6)
+    def _c_srai    (self, rd_rs1_p, nzuimm6,  **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen,   self.x[rd_rs1_p+8] >> nzuimm6)
+    def _c_srli    (self, rd_rs1_p, nzuimm6,  **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen,   zext(self.xlen, self.x[rd_rs1_p+8])  >> nzuimm6)
+    def _c_beqz    (self, rs1_p, bimm9,       **_): self.pc = (self.op.addr+bimm9) if self.x[rs1_p+8] == 0 else self.op.addr+2
+    def _c_bnez    (self, rs1_p, bimm9,       **_): self.pc = (self.op.addr+bimm9) if self.x[rs1_p+8] != 0 else self.op.addr+2
+    def _c_ntl_p1  (self,                     **_): self.pc+=2  # hints from Zihintntl, required to pass test rv32i_m/C/src/cadd-01.S
+    def _c_ntl_pall(self,                     **_): self.pc+=2
+    def _c_ntl_s1  (self,                     **_): self.pc+=2
+    def _c_ntl_all (self,                     **_): self.pc+=2
     def hook_exec(self): return True
     def unimplemented(self, **_): print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}')
     def step(self, trace=True):
-        self.op = decode(struct.unpack_from('I', *self.page_and_offset(self.pc))[0]); self.op.addr=self.pc  # setting op.addr afterwards enables opcode caching.
+        self.op = decode(struct.unpack_from('I', *self.page_and_offset(self.pc))[0], 0, self.xlen); self.op.addr=self.pc  # setting op.addr afterwards enables opcode caching.
         self.trace_log = [] if trace else None
         if self.hook_exec():
             self.cycle += 1; self.csr[self.csr_mcycle] = zext(self.xlen, self.cycle)

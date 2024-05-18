@@ -39,18 +39,33 @@ for name, op in opcodes.items():
             else:
                 prev_shift, prev_mask = shift, 1<<target
                 pieces.append(f'(x{shift})&{1<<target}')
-            op['arg_getter'][vf] = f'$sext({len(op["arg_bits"][vf])},' + '|'.join(pieces) + ')$' if op['arg_bits'][vf][0] == 31 and vf != 'csr' else '$' + '|'.join(pieces) + '$'
+            op['arg_getter'][vf] = f'$sext({len(op["arg_bits"][vf])},' + '|'.join(pieces) + ')$' if op['arg_bits'][vf][0] == 31 and vf != 'csr' or vf in {'imm6', 'nzimm6', 'nzimm18', 'nzimm10', 'imm12', 'bimm9'} else '$' + '|'.join(pieces) + '$'
 
-common_ops = ('addi,sw,lw,jal,bne,beq,add,jalr,lbu,slli,lui,andi,or,bltu,srli,and,sub,blt,bgeu,xor,sb,auipc,sltiu,bge,lb,mul,sltu,lhu,sll,srl,sh,amoadd_w,xori,ori,csrrci,csrrs,srai,fence,lr_w,sc_w,mulhu,amoor_w,lh,amoand_w,csrrsi,divu,div,remu,sra,slt,csrrw,amoswap_w,csrrc,mulh,fence_i,rem,mret,csrrwi').split(',')
-mask_match = []
-mask_match_aliases = collections.defaultdict(set)
-for mask in dict((opcodes[op]['mask'],1) for op in common_ops + list(opcodes)):
-    matches = {}
-    for op in opcodes.values():
-        if op['mask'] != mask or op['name'].endswith('_rv32'): continue
-        if op['match'] in matches: mask_match_aliases[matches[op['match']][1:-1]].add(op['name'])
-        else: matches[op['match']] = f'${op["name"]}$'
-    mask_match.append((mask, matches))
+# 2 purposes: sort most common ops first in the mask list, and give precendence to more specific compressed ops.
+common_ops = ('addi,sw,lw,jal,bne,beq,add,jalr,lbu,slli,lui,andi,or,bltu,srli,and,sub,blt,bgeu,xor,sb,auipc,sltiu,bge,lb,mul,sltu,lhu,sll,srl,sh,amoadd_w,xori,ori,csrrci,csrrs,c_nop,c_addi16sp,c_ebreak,c_jr,c_jalr').split(',')
+
+def make_mm(affinity):
+    mask_match = []
+    mask_match_aliases = collections.defaultdict(set)
+    for mask in dict((opcodes[op]['mask'],1) for op in common_ops + list(opcodes)):
+        matches = {}
+        for op in opcodes.values():
+            if op['mask'] != mask or op['name'].endswith('_rv32'): continue
+            if op['match'] in matches:
+                prefer = False
+                for ext in op['extension']:
+                    if affinity in ext: prefer = True
+                if prefer:
+                    mask_match_aliases[op['name']].add(matches[op['match']][1:-1])
+                    matches[op['match']] = f'${op["name"]}$'
+                else:
+                    mask_match_aliases[matches[op['match']][1:-1]].add(op['name'])
+            else: matches[op['match']] = f'${op["name"]}$'
+        mask_match.append((mask, matches))
+    return mask_match, dict(mask_match_aliases)
+
+mask_match_rv32, mask_match_aliases_rv32 = make_mm('rv32')
+mask_match_rv64, mask_match_aliases_rv64 = make_mm('rv64')
 
 print('writing tinyrv/opcodes.py')
 with open('tinyrv/opcodes.py', 'w') as f:
@@ -60,6 +75,9 @@ with open('tinyrv/opcodes.py', 'w') as f:
     f.write(f'opcodes={ostr}\n')
     f.write(f'arg_bits={str(arg_bits)}\n')
     f.write(f'csrs={str(csrs)}\n')
-    dstr = str(mask_match).replace("'$", "opcodes['").replace("$'", "']")
-    f.write(f'mask_match={dstr}\n')
-    f.write(f'mask_match_aliases={dict(mask_match_aliases)}\n')
+    dstr = str(mask_match_rv32).replace("'$", "opcodes['").replace("$'", "']")
+    f.write(f'mask_match_rv32={dstr}\n')
+    f.write(f'mask_match_aliases_rv32={dict(mask_match_aliases_rv32)}\n')
+    dstr = str(mask_match_rv64).replace("'$", "opcodes['").replace("$'", "']")
+    f.write(f'mask_match_rv64={dstr}\n')
+    f.write(f'mask_match_aliases_rv64={dict(mask_match_aliases_rv64)}\n')

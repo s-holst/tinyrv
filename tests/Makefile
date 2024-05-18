@@ -6,6 +6,7 @@ run_riscv_tests: riscv-tests-compiled
 	for i in riscv-tests/isa/rv??ui-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-vm-linux $$i || exit $$?; fi; done
 	for i in riscv-tests/isa/rv??ua-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-vm-linux $$i || exit $$?; fi; done
 	for i in riscv-tests/isa/rv??um-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-vm-linux $$i || exit $$?; fi; done
+	for i in riscv-tests/isa/rv??uc-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-vm-linux $$i || exit $$?; fi; done
 
 riscv-tests-compiled: riscv-tests/isa/rv32ui-p-add
 
