@@ -81,7 +81,7 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
             current = min(nbytes, self.mem_psize - poffset)
             addr, nbytes = addr+current, nbytes-current
     def copy_in(self, addr, bytes, doffset=0):
-        for page, offset, chunk in self.page_and_offset_iter(addr, len(bytes)): page[offset:offset+chunk] = bytes[doffset:(doffset:=doffset+chunk)]
+        for page, offset, chunk in self.page_and_offset_iter(addr, len(bytes)): page[offset:offset+chunk] = bytes[doffset:(doffset:=doffset+min(chunk, self.mem_psize))]
     def copy_out(self, addr, nbytes, doffset=0):
         data = bytearray(nbytes+doffset)
         for page, offset, chunk in self.page_and_offset_iter(addr, nbytes): data[doffset:(doffset:=doffset+chunk)] = page[offset:offset+chunk]
