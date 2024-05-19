@@ -55,7 +55,7 @@ def decoder(*data, base=0):  # yields decoded instructions.
     for addr, instr in rvsplitter(*data, base=base):
         if instr != 0: yield decode(instr, addr)
 
-class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
+class sim:  # simulates RV32IMACZicsr_Zifencei, RV64IMACZicsr_Zifencei
     class rvregs:
         def __init__(self, xlen, sim): self._x, self.xlen, self.sim = [0]*32, xlen, sim
         def __getitem__(self, i): return self._x[i]
@@ -66,14 +66,14 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def __init__(self, xlen=64, trap_misaligned=True):
         self.xlen, self.trap_misaligned, self.trace_log = xlen, trap_misaligned, []
         self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), [0]*32, [0]*4096, -1, 0, 3, 2<<20, collections.defaultdict(functools.partial(bytearray, 2<<20+2))  # 2-byte overlap for loading unaligned 32-bit opcodes
-        [setattr(self, n, i) for i, n in list(enumerate(iregs))]; [setattr(self, 'csr_'+n, i) for i, n in list(csrs.items())]  # convenience
+        [setattr(self, n.upper(), i) for i, n in list(enumerate(iregs))+list(csrs.items())]  # convenience
     def hook_csr(self, csr, reqval): return reqval if (csr&0xc00)!=0xc00 else self.csr[csr]
     def notify_stored(self, addr): pass  # called *after* mem store
     def notify_loading(self, addr): pass  # called *before* mem load
     def mtrap(self, tval, cause):
-        self.csr[self.csr_mtval], self.csr[self.csr_mepc], self.csr[self.csr_mcause], self.pc = zext(self.xlen,tval), self.op.addr, cause, zext(self.xlen,self.csr[self.csr_mtvec]&(~3))  # TODO: vectored interrupts
+        self.csr[self.MTVAL], self.csr[self.MEPC], self.csr[self.MCAUSE], self.pc = zext(self.xlen,tval), self.op.addr, cause, zext(self.xlen,self.csr[self.MTVEC]&(~3))  # TODO: vectored interrupts
         if self.trace_log is not None: self.trace_log.append(f'mtrap from_mode={self.current_mode} cause={hex(cause)} tval={hex(tval)}')
-        self.csr[self.csr_mstatus], self.current_mode = ((self.csr[self.csr_mstatus]&0x08) << 4) | (self.current_mode << 11), 3
+        self.csr[self.MSTATUS], self.current_mode = ((self.csr[self.MSTATUS]&0x08) << 4) | (self.current_mode << 11), 3
     def page_and_offset_iter(self, addr, nbytes):
         while nbytes > 0:
             page, poffset = self.page_and_offset(zext(self.xlen, addr))
@@ -158,7 +158,7 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def _csrrwi    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, zimm                      )
     def _csrrsi    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]| zimm       )
     def _csrrci    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]&~zimm       )
-    def _mret      (self,                     **_): self.pc = zext(self.xlen, self.csr[self.csr_mepc]); mmode = (self.csr[self.csr_mstatus]>>11)&3; self.csr[self.csr_mstatus] = (self.current_mode << 11) | 0x80 | ((self.csr[self.csr_mstatus]&0x80) >> 4); self.current_mode = mmode
+    def _mret      (self,                     **_): self.pc = zext(self.xlen, self.csr[self.MEPC]); mmode = (self.csr[self.MSTATUS]>>11)&3; self.csr[self.MSTATUS] = (self.current_mode << 11) | 0x80 | ((self.csr[self.MSTATUS]&0x80) >> 4); self.current_mode = mmode
     def _ecall     (self,                     **_): self.mtrap(0, 8 if self.current_mode == 0 else 11)
     def _ebreak    (self,                     **_): self.mtrap(self.op.addr, 3)
     def _mul       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )           )
@@ -200,38 +200,38 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
     def _sc_d      (self, rd, rs1, rs2,       **_):
         if self.lr_res_addr == self.x[rs1]: self.pc+=4; self.lr_res_addr = -1; self.store('q', self.x[rs1], sext(64, self.x[rs2])); self.x[rd] = 0
         else:                               self.pc+=4; self.lr_res_addr = -1;                                                      self.x[rd] = 1
+    def _c_ebreak  (self,                     **_): self.mtrap(self.op.addr, 3)
     def _c_nop     (self,                     **_): self.pc+=2;  # c.nop also required to pass test rv32i_m/privilege/src/misalign-jal-01.S
-    def _c_mv      (self, rd_n0, rs2_n0,      **_): self.pc+=2; self.x[rd_n0] = self.x[rs2_n0]
-    def _c_add     (self, rd_rs1_n0, rs2_n0,  **_): self.pc+=2; self.x[rd_rs1_n0] =  sext(self.xlen, self.x[rd_rs1_n0] + self.x[rs2_n0])
+    def _c_lui     (self, rd_n2, nzimm18,     **_): self.pc+=2; self.x[rd_n2]      = nzimm18
+    def _c_li      (self, rd_n0, imm6,        **_): self.pc+=2; self.x[rd_n0]      = imm6
+    def _c_mv      (self, rd_n0, rs2_n0,      **_): self.pc+=2; self.x[rd_n0]      = self.x[rs2_n0]
+    def _c_add     (self, rd_rs1_n0, rs2_n0,  **_): self.pc+=2; self.x[rd_rs1_n0]  = sext(self.xlen, self.x[rd_rs1_n0]  + self.x[rs2_n0] )
+    def _c_addi    (self, rd_rs1_n0, nzimm6,  **_): self.pc+=2; self.x[rd_rs1_n0]  = sext(self.xlen, self.x[rd_rs1_n0]  + nzimm6         )
+    def _c_addiw   (self, rd_rs1_n0, imm6,    **_): self.pc+=2; self.x[rd_rs1_n0]  = sext(32,        self.x[rd_rs1_n0]  + imm6           )
+    def _c_slli    (self, rd_rs1_n0, nzuimm6, **_): self.pc+=2; self.x[rd_rs1_n0]  = sext(self.xlen, self.x[rd_rs1_n0] << nzuimm6        )
     def _c_and     (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, self.x[rd_rs1_p+8] & self.x[rs2_p+8])
     def _c_or      (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, self.x[rd_rs1_p+8] | self.x[rs2_p+8])
     def _c_xor     (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, self.x[rd_rs1_p+8] ^ self.x[rs2_p+8])
     def _c_sub     (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, self.x[rd_rs1_p+8] - self.x[rs2_p+8])
-    def _c_addw    (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(32, self.x[rd_rs1_p+8] + self.x[rs2_p+8])
-    def _c_subw    (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(32, self.x[rd_rs1_p+8] - self.x[rs2_p+8])
-    def _c_addi4spn(self, rd_p, nzuimm10,     **_): self.pc+=2; self.x[rd_p+8] = self.x[2] + nzuimm10
-    def _c_li      (self, rd_n0, imm6,        **_): self.pc+=2; self.x[rd_n0] = imm6
-    def _c_lui     (self, rd_n2, nzimm18,     **_): self.pc+=2; self.x[rd_n2] = nzimm18
-    def _c_swsp    (self, rs2, uimm8sp_s,     **_): self.pc+=2; self.store('I', self.x[2]+uimm8sp_s, zext(32,self.x[rs2]))
-    def _c_sdsp    (self, rs2, uimm9sp_s,     **_): self.pc+=2; self.store('Q', self.x[2]+uimm9sp_s, zext(64,self.x[rs2]))
-    def _c_addi    (self, rd_rs1_n0, nzimm6,  **_): self.pc+=2; self.x[rd_rs1_n0] = sext(self.xlen, self.x[rd_rs1_n0] + nzimm6)
-    def _c_addiw   (self, rd_rs1_n0, imm6,    **_): self.pc+=2; self.x[rd_rs1_n0] = sext(32, self.x[rd_rs1_n0] + imm6)
+    def _c_addw    (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(32,        self.x[rd_rs1_p+8] + self.x[rs2_p+8])
+    def _c_subw    (self, rd_rs1_p, rs2_p,    **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(32,        self.x[rd_rs1_p+8] - self.x[rs2_p+8])
     def _c_andi    (self, rd_rs1_p, imm6,     **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, self.x[rd_rs1_p+8] & imm6)
+    def _c_srai    (self, rd_rs1_p, nzuimm6,  **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, self.x[rd_rs1_p+8] >> nzuimm6)
+    def _c_srli    (self, rd_rs1_p, nzuimm6,  **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, zext(self.xlen, self.x[rd_rs1_p+8])  >> nzuimm6)
+    def _c_addi4spn(self, rd_p, nzuimm10,     **_): self.pc+=2; self.x[rd_p+8]     = self.x[2] + nzuimm10
+    def _c_lw      (self, rd_p, rs1_p, uimm7, **_): self.pc+=2; self.x[rd_p+8]     = self.load('i', self.x[rs1_p+8]+uimm7, self.x[rd_p+8])
+    def _c_ld      (self, rd_p, rs1_p, uimm8, **_): self.pc+=2; self.x[rd_p+8]     = self.load('q', self.x[rs1_p+8]+uimm8, self.x[rd_p+8])
+    def _c_lwsp    (self, rd_n0, uimm8sp,     **_): self.pc+=2; self.x[rd_n0]      = self.load('i', self.x[2]+uimm8sp, self.x[rd_n0])
+    def _c_ldsp    (self, rd_n0, uimm9sp,     **_): self.pc+=2; self.x[rd_n0]      = self.load('q', self.x[2]+uimm9sp, self.x[rd_n0])
+    def _c_addi16sp(self, nzimm10,            **_): self.pc+=2; self.x[2]         += nzimm10
+    def _c_swsp    (self, rs2, uimm8sp_s,     **_): self.pc+=2; self.store('I', self.x[2]+uimm8sp_s,   zext(32,self.x[rs2]))
+    def _c_sdsp    (self, rs2, uimm9sp_s,     **_): self.pc+=2; self.store('Q', self.x[2]+uimm9sp_s,   zext(64,self.x[rs2]))
     def _c_sw      (self, rs1_p,rs2_p, uimm7, **_): self.pc+=2; self.store('I', self.x[rs1_p+8]+uimm7, zext(32,self.x[rs2_p+8]))
     def _c_sd      (self, rs1_p,rs2_p, uimm8, **_): self.pc+=2; self.store('Q', self.x[rs1_p+8]+uimm8, zext(64,self.x[rs2_p+8]))
-    def _c_addi16sp(self, nzimm10,            **_): self.pc+=2; self.x[2] += nzimm10
-    def _c_ebreak  (self,                     **_): self.mtrap(self.op.addr, 3)
     def _c_jalr    (self, rs1_n0,             **_): self.pc, self.x[1] = zext(self.xlen, self.x[rs1_n0])&(~1), sext(self.xlen, self.op.addr+2) # LSB=0
+    def _c_jal     (self, imm12,              **_): self.pc, self.x[1] = zext(self.xlen, self.op.addr+imm12),  sext(self.xlen, self.op.addr+2)
     def _c_jr      (self, rs1_n0,             **_): self.pc = zext(self.xlen, self.x[rs1_n0])&(~1) # LSB=0
     def _c_j       (self, imm12,              **_): self.pc = zext(self.xlen, self.op.addr+imm12)
-    def _c_jal     (self, imm12,              **_): self.pc, self.x[1] = zext(self.xlen, self.op.addr+imm12), sext(self.xlen, self.op.addr+2)
-    def _c_lw      (self, rd_p, rs1_p, uimm7, **_): self.pc+=2; self.x[rd_p+8] = self.load('i', self.x[rs1_p+8]+uimm7, self.x[rd_p+8])
-    def _c_ld      (self, rd_p, rs1_p, uimm8, **_): self.pc+=2; self.x[rd_p+8] = self.load('q', self.x[rs1_p+8]+uimm8, self.x[rd_p+8])
-    def _c_lwsp    (self, rd_n0, uimm8sp,     **_): self.pc+=2; self.x[rd_n0] = self.load('i', self.x[2]+uimm8sp, self.x[rd_n0])
-    def _c_ldsp    (self, rd_n0, uimm9sp,     **_): self.pc+=2; self.x[rd_n0] = self.load('q', self.x[2]+uimm9sp, self.x[rd_n0])
-    def _c_slli    (self, rd_rs1_n0, nzuimm6, **_): self.pc+=2; self.x[rd_rs1_n0] = sext(self.xlen,   self.x[rd_rs1_n0]  << nzuimm6)
-    def _c_srai    (self, rd_rs1_p, nzuimm6,  **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen,   self.x[rd_rs1_p+8] >> nzuimm6)
-    def _c_srli    (self, rd_rs1_p, nzuimm6,  **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen,   zext(self.xlen, self.x[rd_rs1_p+8])  >> nzuimm6)
     def _c_beqz    (self, rs1_p, bimm9,       **_): self.pc = (self.op.addr+bimm9) if self.x[rs1_p+8] == 0 else self.op.addr+2
     def _c_bnez    (self, rs1_p, bimm9,       **_): self.pc = (self.op.addr+bimm9) if self.x[rs1_p+8] != 0 else self.op.addr+2
     def _c_ntl_p1  (self,                     **_): self.pc+=2  # hints from Zihintntl, required to pass test rv32i_m/C/src/cadd-01.S
@@ -244,7 +244,7 @@ class sim:  # simulates RV32IMAZicsr_Zifencei, RV64IMAZicsr_Zifencei
         self.op = decode(struct.unpack_from('I', *self.page_and_offset(self.pc))[0], 0, self.xlen); self.op.addr=self.pc  # setting op.addr afterwards enables opcode caching.
         self.trace_log = [] if trace else None
         if self.hook_exec():
-            self.cycle += 1; self.csr[self.csr_mcycle] = zext(self.xlen, self.cycle)
+            self.cycle += 1; self.csr[self.MCYCLE] = zext(self.xlen, self.cycle)
             getattr(self, '_'+self.op.name, self.unimplemented)(**self.op.args)  # dynamic instruction dispatch
             if trace: print(f'{zext(64,self.op.addr):08x}: {str(self.op):40} # [{self.cycle-1}]', ' '.join(self.trace_log))
             if trace and self.pc-self.op.addr not in (2, 4): print()

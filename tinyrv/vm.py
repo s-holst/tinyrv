@@ -61,58 +61,58 @@ class linux(sim):
         self.trace = trace
         load_elf(self, self.elf, trace=trace)
         heap_end_sym = self.elf.get_symbol('heap_end.0')
-        self.heap_end = heap_end_sym.value if heap_end_sym is not None else 0xa0000000
+        self.heap_end = heap_end_sym.value if heap_end_sym is not None else 0xA0000000
         self.keep_running = True
         self.exitcode = 0
-        self.x[self.sp], arg_data = pack_args(args, self.xlen)  # puts argc and **argv on stack and init sp
-        self.copy_in(self.x[self.sp], arg_data)
+        self.x[self.SP], arg_data = pack_args(args, self.xlen)  # puts argc and **argv on stack and init sp
+        self.copy_in(self.x[self.SP], arg_data)
         self.start_time = time.perf_counter()
 
     def _ecall(self, **_):
         # helpful: https://jborza.com/post/2021-05-11-riscv-linux-syscalls/
-        syscall_no = self.x[self.a7]
+        syscall_no = self.x[self.A7]
         if syscall_no == 80:  # fstat
-            fd = self.x[self.a0]
-            out_mem_ptr = self.x[self.a1]
+            fd = self.x[self.A0]
+            out_mem_ptr = self.x[self.A1]
             self.copy_in(out_mem_ptr, kernel_stat2().pack())
-            self.x[self.a0] = 0  # success
+            self.x[self.A0] = 0  # success
             self.pc += 4
             return
         elif syscall_no == 214:  # sbrk
-            increment = self.x[self.a0]
+            increment = self.x[self.A0]
             self.heap_end += increment
-            self.x[self.a0] = self.heap_end  # return new heap_end
+            self.x[self.A0] = self.heap_end  # return new heap_end
             self.pc += 4
             return
         elif syscall_no == 64:  # write
-            fd = self.x[self.a0]
-            ptr = self.x[self.a1]
-            length = self.x[self.a2]
+            fd = self.x[self.A0]
+            ptr = self.x[self.A1]
+            length = self.x[self.A2]
             #print(f'\nwriting {fd} {hex(ptr)} {length}\n')
             data = self.copy_out(ptr, length)
             s = data.decode()
             if fd == 1:
                 print(s, end='', flush=True)
-                self.x[self.a0] = length
+                self.x[self.A0] = length
                 self.pc += 4
                 return
             elif fd == 2:
                 print(s, end='', flush=True, file=sys.stderr)
-                self.x[self.a0] = length
+                self.x[self.A0] = length
                 self.pc += 4
                 return
             else:
                 print(f'write to unknown file handle')
         elif syscall_no == 57:  # close
-            fd = self.x[self.a0]
+            fd = self.x[self.A0]
             #print(f'close file {fd}')
-            self.x[self.a0] = 0  # success
+            self.x[self.A0] = 0  # success
             self.pc += 4
             return
         elif syscall_no == 93:  # exit
-            self.exitcode = self.x[self.a0]
+            self.exitcode = self.x[self.A0]
             if self.trace: print(f'exit {self.exitcode}')
-            self.x[self.a0] = 0  # success
+            self.x[self.A0] = 0  # success
             self.pc += 0  # stop here. self.run will return since pc is unchanged.
             return
         else:
@@ -134,15 +134,15 @@ class semihosting(sim):
         self.trace = trace
         load_elf(self, self.elf, trace=trace)
         self.exitcode = 0
-        self.x[self.sp], arg_data = pack_args(args, self.xlen)  # puts argc and **argv on stack and init sp
-        self.copy_in(self.x[self.sp], arg_data)
+        self.x[self.SP], arg_data = pack_args(args, self.xlen)  # puts argc and **argv on stack and init sp
+        self.copy_in(self.x[self.SP], arg_data)
 
     def _ebreak(self, **_):
         if self.load('I', self.op.addr-4, 0, notify=False) != 0x01f01013: return super()._ebreak()  # check slli zero,zero,0x1f before
         if self.load('I', self.op.addr+4, 0, notify=False) != 0x40705013: return super()._ebreak()  # check srai zero,zero,0x7 after
         # we have a semihost call
-        semihost_no = self.x[self.a0]
-        semihost_param = self.x[self.a1]
+        semihost_no = self.x[self.A0]
+        semihost_param = self.x[self.A1]
         ptr_bytes = 4 if self.xlen == 32 else 8
         ptr_fmt = 'I' if self.xlen == 32 else 'Q'
         if semihost_no == 1:  # open
@@ -156,18 +156,18 @@ class semihosting(sim):
             #fnlen = self.load('I', semihost_param+ptr_bytes*2, 0, notify=False)
             handle = {(':tt', 0): 1, (':tt', 4): 2, (':tt', 8): 3}.get((fname, mode), -1)  # r:stdin, w:stdout, a:stderr
             #print(f'open {fname} mode {mode} -> {handle}')
-            self.x[self.a0] = handle
+            self.x[self.A0] = handle
             self.pc += 4
         elif semihost_no == 0x0c:  # flen
             handle = self.load(ptr_fmt, semihost_param, 0, notify=False)
             flen = 0
             #print(f'flen {handle} -> {flen}')
-            self.x[self.a0] = flen
+            self.x[self.A0] = flen
             self.pc += 4
         elif semihost_no == 0x09:  # istty
             handle = self.load(ptr_fmt, semihost_param, 0, notify=False)
             #print(f'istty {handle} -> 1')
-            self.x[self.a0] = 1
+            self.x[self.A0] = 1
             self.pc += 4
         elif semihost_no == 0x05:  # write
             handle = self.load(ptr_fmt, semihost_param, 0, notify=False)
@@ -176,17 +176,17 @@ class semihosting(sim):
             s = self.copy_out(ptr, length).decode()
             print(s, end='', flush=True)
             #print(f'write {hex(ptr)} {length}')
-            self.x[self.a0] = 0
+            self.x[self.A0] = 0
             self.pc += 4
         elif semihost_no == 0x02:  # close
             handle = self.load(ptr_fmt, semihost_param, 0, notify=False)
             #print(f'close {handle} -> 0')
-            self.x[self.a0] = 0
+            self.x[self.A0] = 0
             self.pc += 4
         elif semihost_no == 0x18:  # exit
             reason = semihost_param
             #print(f'exit {hex(reason)} -> 0')
-            self.x[self.a0] = 0
+            self.x[self.A0] = 0
             self.exitcode = semihost_param != 0x20026  # exit 1 if not a normal application exit.
         else:
             print(f'unknown semihost {hex(semihost_no)} {hex(semihost_param)} from {hex(self.op.addr)}')

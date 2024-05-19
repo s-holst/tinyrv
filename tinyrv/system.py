@@ -68,8 +68,8 @@ class plic:  # FIXME very incomplete! Reference: https://static.dev.sifive.com/U
             else:
                 self.pending &= ~(1<<irq)
                 self.next_to_claim = 0  # we are the only one.
-        if self.has_pending_irq(): self.system.csr[self.system.csr_mip] |= 1<<11  # set MEIP, machine external interrupt
-        else: self.system.csr[self.system.csr_mip] &= ~(1<<11)
+        if self.has_pending_irq(): self.system.csr[self.system.MIP] |= 1<<11  # set MEIP, machine external interrupt
+        else: self.system.csr[self.system.MIP] &= ~(1<<11)
     def __setitem__(self, addr, value):
         if addr == 0x20_0004:  # complete
             if self.system.trace_log is not None: self.system.trace_log.append(f'{{plic complete}}')
@@ -81,8 +81,8 @@ class plic:  # FIXME very incomplete! Reference: https://static.dev.sifive.com/U
             self.claimed_irq = self.next_to_claim
             self.pending &= ~(1<<self.claimed_irq)
             self.next_to_claim = 0
-            if self.has_pending_irq(): self.system.csr[self.system.csr_mip] |= 1<<11  # set MEIP, machine external interrupt
-            else: self.system.csr[self.system.csr_mip] &= ~(1<<11)
+            if self.has_pending_irq(): self.system.csr[self.system.MIP] |= 1<<11  # set MEIP, machine external interrupt
+            else: self.system.csr[self.system.MIP] &= ~(1<<11)
             return self.claimed_irq
         return 0
     def has_pending_irq(self): return self.next_to_claim != 0
@@ -96,8 +96,8 @@ class clint:  # eastwood(?) Core Local Interruptor. Reference: https://static.de
         if addr == 0x4000: self.mtimecmp = value
     def has_pending_irq(self): return self.mtime() >= self.mtimecmp
     def update(self):
-        if self.has_pending_irq(): self.system.csr[self.system.csr_mip] |= 1<<7  # timer expired, set MTIP
-        else: self.system.csr[self.system.csr_mip] &= ~(1<<7)
+        if self.has_pending_irq(): self.system.csr[self.system.MIP] |= 1<<7  # timer expired, set MTIP
+        else: self.system.csr[self.system.MIP] &= ~(1<<7)
 
 class virt(tinyrv.sim):
     def __init__(self, image, ram_size, xlen=64, command_line=None):
@@ -189,9 +189,9 @@ class virt(tinyrv.sim):
         self.plic.update()
         self.clint.update()
 
-        if self.csr[self.csr_mstatus] & 0x8:  # master interrupt enable
+        if self.csr[self.MSTATUS] & 0x8:  # master interrupt enable
             for irq in (11, 7, 3): # external, timer, software - in that order of priority.
-                if  self.csr[self.csr_mie] & self.csr[self.csr_mip] & (1<<irq):
+                if  self.csr[self.MIE] & self.csr[self.MIP] & (1<<irq):
                     if self.trace_log is not None: print(f'\n{{mtrap from_mode={self.current_mode} irq={irq} cycle={self.cycle} pc={self.pc} op={str(self.op)}}}\n')  # print here, because op will not execute.
                     self.mtrap(0, tinyrv.sext(self.xlen, irq | (1<<(self.xlen-1))))
                     self.wfi = False
@@ -208,7 +208,7 @@ class virt(tinyrv.sim):
         if (self.trace_log is not None) and (self.op.addr in self.syms): self.trace_log.append(f'<{self.syms[self.op.addr]}>')
         return super().hook_exec()  # continue normally
 
-    def _wfi(self, **_): self.pc += 4; self.csr[self.csr_mstatus] |= 0x8; self.wfi = True
+    def _wfi(self, **_): self.pc += 4; self.csr[self.MSTATUS] |= 0x8; self.wfi = True
 
 def run_virt():
     parser = argparse.ArgumentParser(prog='tinyrv-system-virt', description='Emulates a minimal system similar to "virt" from qemu.')
