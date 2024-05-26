@@ -200,6 +200,17 @@ class htif(sim):  # Berkeley Host-Target Interface (HTIF)
         self.elf_file, self.elf = elf_file, elf
         self.trace = trace
         load_elf(self, self.elf, trace=trace)
+        struct.pack_into('8I', *self.page_and_offset(0x1000),  # SAIL-style barebones bootloader
+                         0x00000297,  # auipc  t0, 0
+                         0x02028593,  # addi   a1, t0, 0x20
+                         0xF1402573,  # csrrs  a0, mhartid, zero
+                         0x0182A283 if self.xlen==32 else 0x0182B283,  # lw/ld     t0, 0x18(t0)
+                         0x00028067,  # jalr   zero, 0x0(t0)
+                         0,
+                         self.elf.entrypoint & 0xffffffff,
+                         self.elf.entrypoint >> 32
+        )
+        self.pc = 0x1000
         self.fromhost_addr = elf.get_symbol('fromhost').value
         self.tohost_addr = elf.get_symbol('tohost').value
         self.keep_running = True
@@ -229,24 +240,26 @@ class htif(sim):  # Berkeley Host-Target Interface (HTIF)
         #     self.store('I', 0x10000000, current_time, notify=False)
         return self.keep_running
 
-def run_riscof_vm():
+def run_htif():
     parser = argparse.ArgumentParser(
-                    prog='tinyrv-vm-riscof',
-                    description='Runs a riscof test and prints the signature.')
+                    prog='tinyrv-user-htif',
+                    description='Runs an ELF in a Berkeley Host-Target Interface (HTIF) environment. Prints RISCOF signatures if available.')
     parser.add_argument('-t', '--trace', action='store_true')
+    parser.add_argument('-l', '--limit', type=int, default=0)
     parser.add_argument('elf', type=argparse.FileType('rb'))
     args = parser.parse_args()
     vm = htif(args.elf, trace=args.trace)
-    vm.run(0, trace=args.trace)
-    begin_signature = vm.elf.get_symbol('begin_signature').value
-    end_signature = vm.elf.get_symbol('end_signature').value
-    for addr in range(begin_signature, end_signature, 4):
-        print(f'{vm.load("I",addr):08x}')
+    vm.run(args.limit, trace=args.trace)
+    if vm.elf.get_symbol('begin_signature') is not None:
+        begin_signature = vm.elf.get_symbol('begin_signature').value
+        end_signature = vm.elf.get_symbol('end_signature').value
+        for addr in range(begin_signature, end_signature, 4):
+            print(f'{vm.load("I",addr):08x}')
     return vm.exitcode
 
-def run_semihosting_vm():
+def run_semihosting():
     parser = argparse.ArgumentParser(
-                    prog='tinyrv-vm-semihosting',
+                    prog='tinyrv-user-semihosting',
                     description='Runs the binary with semihosting.')
     parser.add_argument('-t', '--trace', action='store_true')
     parser.add_argument('-l', '--limit', type=int, default=0)
@@ -257,9 +270,9 @@ def run_semihosting_vm():
     vm.run(args.limit, trace=args.trace)
     return vm.exitcode
 
-def run_linux_vm():
+def run_linux():
     parser = argparse.ArgumentParser(
-                    prog='tinyrv-vm-linux',
+                    prog='tinyrv-user-linux',
                     description='Emulates a minimal linux userspace. Supports argv/argv and a few syscalls.')
     parser.add_argument('-t', '--trace', action='store_true')
     parser.add_argument('elf', type=argparse.FileType('rb'))
@@ -270,4 +283,4 @@ def run_linux_vm():
     return vm.exitcode
 
 if __name__ == '__main__':
-    exit(run_linux_vm())
+    exit(run_linux())

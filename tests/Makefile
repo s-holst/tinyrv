@@ -3,10 +3,10 @@ all: test_mini32 test_mini64 test_mini32semi test_mini64semi run_riscv_tests run
 ############# riscv-software-src/riscv-tests
 
 run_riscv_tests: riscv-tests-compiled
-	for i in riscv-tests/isa/rv??ui-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-vm-linux $$i || exit $$?; fi; done
-	for i in riscv-tests/isa/rv??ua-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-vm-linux $$i || exit $$?; fi; done
-	for i in riscv-tests/isa/rv??um-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-vm-linux $$i || exit $$?; fi; done
-	for i in riscv-tests/isa/rv??uc-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-vm-linux $$i || exit $$?; fi; done
+	for i in riscv-tests/isa/rv??ui-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-linux $$i || exit $$?; fi; done
+	for i in riscv-tests/isa/rv??ua-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-linux $$i || exit $$?; fi; done
+	for i in riscv-tests/isa/rv??um-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-linux $$i || exit $$?; fi; done
+	for i in riscv-tests/isa/rv??uc-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-linux $$i || exit $$?; fi; done
 
 riscv-tests-compiled: riscv-tests/isa/rv32ui-p-add
 
@@ -37,16 +37,16 @@ CC_FLAGS_SEMI=${CC_FLAGS} -specs=/opt/riscv/riscv64-unknown-elf/lib/semihost.spe
 
 
 test_mini32: mini32
-	test "$(shell tinyrv-vm-linux mini32 foo 0x01 42)" = "hello mini32 foo 0x01 42"
+	test "$(shell tinyrv-user-linux mini32 foo 0x01 42)" = "hello mini32 foo 0x01 42"
 
 test_mini64: mini64
-	test "$(shell tinyrv-vm-linux mini64 foo 0x01 42)" = "hello mini64 foo 0x01 42"
+	test "$(shell tinyrv-user-linux mini64 foo 0x01 42)" = "hello mini64 foo 0x01 42"
 
 test_mini32semi: mini32semi
-	test "$(shell tinyrv-vm-semihosting mini32semi foo 0x01 42)" = "hello mini32semi foo 0x01 42"
+	test "$(shell tinyrv-user-semihosting mini32semi foo 0x01 42)" = "hello mini32semi foo 0x01 42"
 
 test_mini64semi: mini64semi
-	test "$(shell tinyrv-vm-semihosting mini64semi foo 0x01 42)" = "hello mini64semi foo 0x01 42"
+	test "$(shell tinyrv-user-semihosting mini64semi foo 0x01 42)" = "hello mini64semi foo 0x01 42"
 
 mini64: mini.c
 	riscv64-unknown-elf-gcc ${CC_FLAGS} -march=rv64ima -mabi=lp64 $^ -o $@

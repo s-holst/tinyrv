@@ -14,8 +14,7 @@ class tinyrv(pluginTemplate):
         super().__init__(*args, **kwargs)
         config = kwargs['config']
         self.pluginpath=os.path.abspath(config['pluginpath'])
-        #self.dut_exe = "python3 " + os.path.join(self.pluginpath, "runner.py")
-        self.dut_exe = "tinyrv-vm-riscof"
+        self.dut_exe = "tinyrv-user-htif"
         self.num_jobs = str(config.get('jobs', 1))
         self.isa_spec = os.path.abspath(config['ispec'])
         self.platform_spec = os.path.abspath(config['pspec'])
