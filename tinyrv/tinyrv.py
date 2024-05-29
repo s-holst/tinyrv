@@ -1,6 +1,6 @@
-import os, struct, array, struct, collections, functools, math
+import os, struct, array, struct, collections, functools
 from .opcodes import *
-from .fpu import f32
+from .fpu import f32, f64
 
 iregs = 'zero,ra,sp,gp,tp,t0,t1,t2,fp,s1,a0,a1,a2,a3,a4,a5,a6,a7,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,t3,t4,t5,t6'.split(',')
 fregs = 'ft0,ft1,ft2,ft3,ft4,ft5,ft6,ft7,fs0,fs1,fa0,fa1,fa2,fa3,fa4,fa5,fa6,fa7,fs2,fs3,fs4,fs5,fs6,fs7,fs8,fs9,fs10,fs11,ft8,ft9,ft10,ft11'.split(',')
@@ -57,7 +57,7 @@ def decoder(*data, base=0):  # yields decoded instructions.
     for addr, instr in rvsplitter(*data, base=base):
         if instr != 0: yield decode(instr, addr)
 
-class sim:  # simulates RV32IMACZicsr_Zifencei, RV64IMACZicsr_Zifencei
+class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
     class rvregs:
         def __init__(self, xlen, sim): self._x, self.xlen, self.sim = [0]*32, xlen, sim
         def __getitem__(self, i): return self._x[i]
@@ -66,16 +66,22 @@ class sim:  # simulates RV32IMACZicsr_Zifencei, RV64IMACZicsr_Zifencei
             if i!=0: self._x[i] = d
         def __repr__(self): return '\n'.join(['  '.join([f'x{r+rr:02d}({(iregs[r+rr])[-2:]})={xfmt(self.xlen, self._x[r+rr])}' for r in range(0, 32, 8)]) for rr in range(8)])
     class rvfregs:
-        def __init__(self, flen, sim): self.raw, self.flen, self.sim = [0]*32, flen, sim
-        def __getitem__(self, i): return struct.unpack('f' if self.flen==32 else 'd', struct.pack('I' if self.flen==32 else 'Q', zext(self.flen, self.raw[i])))[0]
-        def __setitem__(self, i, d):
-            if isinstance(d, float): d = struct.unpack('I' if self.flen==32 else 'Q', struct.pack('f' if self.flen==32 else 'd', d))[0]
-            else: d = zext(self.flen, d)
-            if (self.sim.trace_log is not None) and d!=self.raw[i]: self.sim.trace_log.append(f'{fregs[i]}=' + (f'{d:08x}' if self.flen==32 else f'{d:016x}'))
-            self.raw[i] = d
+        class accessor:
+            def __init__(self, fregs, flen) -> None:
+                self.fregs, self.flen, self.nan_box = fregs, flen, ~((1<<flen)-1)
+                self.fmt, self.ifmt, self.QNAN = {16: ('e', 'H', 0x7e00), 32: ('f', 'I', f32.QNAN), 64: ('d', 'Q', f64.QNAN)}[self.flen]
+            def __getitem__(self, i): return float('nan') if self.fregs.raw[i]&self.nan_box != self.nan_box else struct.unpack(self.fmt, struct.pack(self.ifmt, zext(self.flen, self.fregs.raw[i])))[0]
+            def __setitem__(self, i, d):
+                self.fregs.raw[i] = self.nan_box | (struct.unpack(self.ifmt, struct.pack(self.fmt, d))[0] if isinstance(d, float) else d)
+                if self.fregs.sim.trace_log is not None: self.fregs.sim.trace_log.append(f'{fregs[i]}={xfmt(self.flen, self.fregs.raw[i])}')
+        class raw_accessor(accessor):
+            def __getitem__(self, i): return self.QNAN if self.fregs.raw[i]&self.nan_box != self.nan_box else zext(self.flen, self.fregs.raw[i])
+        def __init__(self, flen, sim):
+            self.raw, self.flen, self.sim = [0]*32, flen, sim
+            self.s, self.raw_s, self.d, self.raw_d = self.accessor(self, 32), self.raw_accessor(self, 32), self.accessor(self, 64), self.raw_accessor(self, 64)
     def __init__(self, xlen=64, trap_misaligned=True):
         self.xlen, self.trap_misaligned, self.trace_log = xlen, trap_misaligned, []
-        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), self.rvfregs(32, self), [0]*4096, -1, 0, 3, 2<<20, collections.defaultdict(functools.partial(bytearray, 2<<20+2))  # 2-byte overlap for loading unaligned 32-bit opcodes
+        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), self.rvfregs(64, self), [0]*4096, -1, 0, 3, 2<<20, collections.defaultdict(functools.partial(bytearray, 2<<20+2))  # 2-byte overlap for loading unaligned 32-bit opcodes
         [setattr(self, n.upper(), i) for i, n in list(enumerate(iregs))+list(csrs.items())]  # convenience
     def hook_csr(self, csr, reqval): return reqval if (csr&0xc00)!=0xc00 else self.csr[csr]
     def notify_stored(self, addr): pass  # called *after* mem store
@@ -84,17 +90,16 @@ class sim:  # simulates RV32IMACZicsr_Zifencei, RV64IMACZicsr_Zifencei
         self.csr[self.MTVAL], self.csr[self.MEPC], self.csr[self.MCAUSE], self.pc = zext(self.xlen,tval), self.op.addr, cause, zext(self.xlen,self.csr[self.MTVEC]&(~3))  # TODO: vectored interrupts
         if self.trace_log is not None: self.trace_log.append(f'mtrap from_mode={self.current_mode} cause={hex(cause)} tval={hex(tval)}')
         self.csr[self.MSTATUS], self.current_mode = ((self.csr[self.MSTATUS]&0x08) << 4) | (self.current_mode << 11), 3
-    def page_and_offset_iter(self, addr, nbytes):
-        while nbytes > 0:
-            page, poffset = self.page_and_offset(zext(self.xlen, addr))
-            yield page, poffset, min(nbytes, self.mem_psize + 2 - poffset)  # 2 bytes more to fill overlap
-            current = min(nbytes, self.mem_psize - poffset)
-            addr, nbytes = addr+current, nbytes-current
-    def copy_in(self, addr, bytes, doffset=0):
-        for page, offset, chunk in self.page_and_offset_iter(addr, len(bytes)): page[offset:offset+chunk] = bytes[doffset:(doffset:=doffset+min(chunk, self.mem_psize))]
-    def copy_out(self, addr, nbytes, doffset=0):
-        data = bytearray(nbytes+doffset)
-        for page, offset, chunk in self.page_and_offset_iter(addr, nbytes): data[doffset:(doffset:=doffset+chunk)] = page[offset:offset+chunk]
+    def page_and_offset_iter(self, addr, nbytes, doffset=0):
+        while nbytes > doffset:
+            page, poffset = self.page_and_offset(zext(self.xlen, addr+doffset))
+            yield page, poffset, doffset, min(nbytes-doffset, self.mem_psize - poffset + 2)  # 2 bytes more to fill overlap
+            doffset += min(nbytes-doffset, self.mem_psize - poffset)
+    def copy_in(self, addr, bytes):
+        for page, poffset, doffset, chunk in self.page_and_offset_iter(addr, len(bytes)): page[poffset:poffset+chunk] = bytes[doffset:doffset+chunk]
+    def copy_out(self, addr, nbytes):
+        data = bytearray(nbytes)
+        for page, poffset, doffset, chunk in self.page_and_offset_iter(addr, nbytes): data[doffset:doffset+chunk] = page[poffset:poffset+chunk]
         return data
     def page_and_offset(self, addr): return self.mem_pages[addr&~(self.mem_psize-1)], addr&(self.mem_psize-1)
     def store(self, format, addr, data, notify=True):
@@ -248,36 +253,68 @@ class sim:  # simulates RV32IMACZicsr_Zifencei, RV64IMACZicsr_Zifencei
     def _c_ntl_pall(self,                     **_): self.pc+=2
     def _c_ntl_s1  (self,                     **_): self.pc+=2
     def _c_ntl_all (self,                     **_): self.pc+=2
-    def _flw       (self, rd, rs1, imm12,     **_): self.pc+=4; self.f[rd] = self.load('I', self.x[rs1]+imm12, self.f[rd])
-    def _fsw       (self, rs1, rs2, imm12,    **_): self.pc+=4; self.store('I', self.x[rs1]+imm12, self.f.raw[rs2])
-    def _fcvt_w_s  (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f32(self.f.raw[rs1]).to_i32_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
-    def _fcvt_wu_s (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f32(self.f.raw[rs1]).to_u32_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
-    def _fcvt_l_s  (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f32(self.f.raw[rs1]).to_i64_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
-    def _fcvt_lu_s (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f32(self.f.raw[rs1]).to_u64_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
-    def _fcvt_s_w  (self, rs1, rd, rm,        **_): self.pc+=4; self.f[rd] = float(sext(32, self.x[rs1])); self.csr[self.FCSR] |= self.f[rd] != sext(32, self.x[rs1])
-    def _fcvt_s_wu (self, rs1, rd, rm,        **_): self.pc+=4; self.f[rd] = float(zext(32, self.x[rs1])); self.csr[self.FCSR] |= self.f[rd] != zext(32, self.x[rs1])
-    def _fcvt_s_l  (self, rs1, rd, rm,        **_): self.pc+=4; self.f[rd] = float(sext(64, self.x[rs1])); self.csr[self.FCSR] |= self.f[rd] != sext(64, self.x[rs1])
-    def _fcvt_s_lu (self, rs1, rd, rm,        **_): self.pc+=4; self.f[rd] = float(zext(64, self.x[rs1])); self.csr[self.FCSR] |= self.f[rd] != zext(64, self.x[rs1])
-    def _fsgnj_s   (self, rs1, rs2, rd,       **_): self.pc+=4; self.f.raw[rd] = self.f.raw[rs1]&0x7fffffff | self.f.raw[rs2]&0x80000000
-    def _fsgnjn_s  (self, rs1, rs2, rd,       **_): self.pc+=4; self.f.raw[rd] = self.f.raw[rs1]&0x7fffffff | (~self.f.raw[rs2])&0x80000000
-    def _fsgnjx_s  (self, rs1, rs2, rd,       **_): self.pc+=4; self.f.raw[rd] = self.f.raw[rs1] ^ self.f.raw[rs2]&0x80000000
+    def _flw       (self, rd, rs1, imm12,     **_): self.pc+=4; self.f.s[rd] = self.load('I', self.x[rs1]+imm12, zext(32, self.f.raw[rd]))
+    def _fsw       (self, rs1, rs2, imm12,    **_): self.pc+=4; self.store('I', self.x[rs1]+imm12, zext(32, self.f.raw[rs2]))
+    def _fcvt_w_s  (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f32(self.f.raw_s[rs1]).to_i32_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
+    def _fcvt_wu_s (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f32(self.f.raw_s[rs1]).to_u32_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
+    def _fcvt_l_s  (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f32(self.f.raw_s[rs1]).to_i64_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
+    def _fcvt_lu_s (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f32(self.f.raw_s[rs1]).to_u64_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
+    def _fcvt_s_w  (self, rs1, rd, rm,        **_): self.pc+=4; self.f.s[rd] = float(sext(32, self.x[rs1])); self.csr[self.FCSR] |= self.f.s[rd] != sext(32, self.x[rs1])
+    def _fcvt_s_wu (self, rs1, rd, rm,        **_): self.pc+=4; self.f.s[rd] = float(zext(32, self.x[rs1])); self.csr[self.FCSR] |= self.f.s[rd] != zext(32, self.x[rs1])
+    def _fcvt_s_l  (self, rs1, rd, rm,        **_): self.pc+=4; self.f.s[rd] = float(sext(64, self.x[rs1])); self.csr[self.FCSR] |= self.f.s[rd] != sext(64, self.x[rs1])
+    def _fcvt_s_lu (self, rs1, rd, rm,        **_): self.pc+=4; self.f.s[rd] = float(zext(64, self.x[rs1])); self.csr[self.FCSR] |= self.f.s[rd] != zext(64, self.x[rs1])
+    def _fsgnj_s   (self, rs1, rs2, rd,       **_): self.pc+=4; self.f.s[rd] = self.f.raw_s[rs1]&0x7fffffff | self.f.raw_s[rs2]&0x80000000
+    def _fsgnjn_s  (self, rs1, rs2, rd,       **_): self.pc+=4; self.f.s[rd] = self.f.raw_s[rs1]&0x7fffffff | (~self.f.raw_s[rs2])&0x80000000
+    def _fsgnjx_s  (self, rs1, rs2, rd,       **_): self.pc+=4; self.f.s[rd] = self.f.raw_s[rs1] ^ self.f.raw_s[rs2]&0x80000000
     def _fmv_x_s   (self, rs1, rd,            **_): self.pc+=4; self.x[rd] = sext(32, self.f.raw[rs1])
-    def _fmv_s_x   (self, rs1, rd,            **_): self.pc+=4; self.f.raw[rd] = zext(32, self.x[rs1])
-    def _feq_s     (self, rs1, rs2, rd,       **_): self.pc+=4; self.x[rd] = self.f[rs1] == self.f[rs2]; self.csr[self.FCSR] |= (0x10*f32(self.f.raw[rs1]).is_snan) | (0x10*f32(self.f.raw[rs2]).is_snan)
-    def _flt_s     (self, rs1, rs2, rd,       **_): self.pc+=4; self.x[rd] = self.f[rs1] <  self.f[rs2]; self.csr[self.FCSR] |= (0x10*f32(self.f.raw[rs1]).is_nan) | (0x10*f32(self.f.raw[rs2]).is_nan)
-    def _fle_s     (self, rs1, rs2, rd,       **_): self.pc+=4; self.x[rd] = self.f[rs1] <= self.f[rs2]; self.csr[self.FCSR] |= (0x10*f32(self.f.raw[rs1]).is_nan) | (0x10*f32(self.f.raw[rs2]).is_nan)
-    def _fclass_s  (self, rs1, rd,            **_): self.pc+=4; f = f32(self.f.raw[rs1]); self.x[rd] = (0x1*(f.is_neg and f.is_inf)) | (0x2*(f.is_neg and f.is_normal)) | (0x4*(f.is_neg and f.is_subnormal)) | (0x8*(f.is_neg and f.is_zero)) | (0x10*(not f.is_neg and f.is_zero)) | (0x20*(not f.is_neg and f.is_subnormal)) | (0x40*(not f.is_neg and f.is_normal)) | (0x80*(not f.is_neg and f.is_inf)) | (0x100*(f.is_snan)) | (0x200*(f.is_qnan))
-    def _fadd_s    (self, rs1, rs2, rd, rm,   **_): self.pc+=4; f = f32.add(self.f.raw[rs1], self.f.raw[rs2]                                          , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f[rd] = f.float; self.csr[self.FCSR] |= f.flags
-    def _fsub_s    (self, rs1, rs2, rd, rm,   **_): self.pc+=4; f = f32.add(self.f.raw[rs1], self.f.raw[rs2]^0x80000000                               , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f[rd] = f.float; self.csr[self.FCSR] |= f.flags
-    def _fmul_s    (self, rs1, rs2, rd, rm,   **_): self.pc+=4; f = f32.mul(self.f.raw[rs1], self.f.raw[rs2]                                          , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f[rd] = f.float; self.csr[self.FCSR] |= f.flags
-    def _fdiv_s    (self, rs1, rs2, rd, rm,   **_): self.pc+=4; f = f32.div(self.f.raw[rs1], self.f.raw[rs2]                                          , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f[rd] = f.float; self.csr[self.FCSR] |= f.flags
-    def _fmadd_s   (self, rs1,rs2,rs3,rd, rm, **_): self.pc+=4; f = f32.mad(self.f.raw[rs1], self.f.raw[rs2]              , self.f.raw[rs3]           , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f[rd] = f.float; self.csr[self.FCSR] |= f.flags
-    def _fmsub_s   (self, rs1,rs2,rs3,rd, rm, **_): self.pc+=4; f = f32.mad(self.f.raw[rs1], self.f.raw[rs2]              , self.f.raw[rs3]^0x80000000, rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f[rd] = f.float; self.csr[self.FCSR] |= f.flags
-    def _fnmsub_s  (self, rs1,rs2,rs3,rd, rm, **_): self.pc+=4; f = f32.mad(self.f.raw[rs1], self.f.raw[rs2]              , self.f.raw[rs3]           , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm, negate_product=True); self.f[rd] = f.float; self.csr[self.FCSR] |= f.flags
-    def _fnmadd_s  (self, rs1,rs2,rs3,rd, rm, **_): self.pc+=4; f = f32.mad(self.f.raw[rs1], self.f.raw[rs2]              , self.f.raw[rs3]^0x80000000, rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm, negate_product=True); self.f[rd] = f.float; self.csr[self.FCSR] |= f.flags
-    def _fmin_s    (self, rs1, rs2, rd,       **_): self.pc+=4; f = f32.min(self.f.raw[rs1], self.f.raw[rs2]                                                                                                               ); self.f[rd] = f.float; self.csr[self.FCSR] |= f.flags
-    def _fmax_s    (self, rs1, rs2, rd,       **_): self.pc+=4; f = f32.max(self.f.raw[rs1], self.f.raw[rs2]                                                                                                               ); self.f[rd] = f.float; self.csr[self.FCSR] |= f.flags
-    def _fsqrt_s   (self, rs1, rd, rm,        **_): self.pc+=4; f = f32.sqrt(self.f.raw[rs1]                                                          , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fmv_s_x   (self, rs1, rd,            **_): self.pc+=4; self.f.s[rd] = zext(32, self.x[rs1])
+    def _feq_s     (self, rs1, rs2, rd,       **_): self.pc+=4; self.x[rd] = self.f.s[rs1] == self.f.s[rs2]; self.csr[self.FCSR] |= (0x10*f32(self.f.raw_s[rs1]).is_snan) | (0x10*f32(self.f.raw_s[rs2]).is_snan)
+    def _flt_s     (self, rs1, rs2, rd,       **_): self.pc+=4; self.x[rd] = self.f.s[rs1] <  self.f.s[rs2]; self.csr[self.FCSR] |= (0x10*f32(self.f.raw_s[rs1]).is_nan) | (0x10*f32(self.f.raw_s[rs2]).is_nan)
+    def _fle_s     (self, rs1, rs2, rd,       **_): self.pc+=4; self.x[rd] = self.f.s[rs1] <= self.f.s[rs2]; self.csr[self.FCSR] |= (0x10*f32(self.f.raw_s[rs1]).is_nan) | (0x10*f32(self.f.raw_s[rs2]).is_nan)
+    def _fclass_s  (self, rs1, rd,            **_): self.pc+=4; f = f32(self.f.raw_s[rs1]); self.x[rd] = (0x1*(f.is_neg and f.is_inf)) | (0x2*(f.is_neg and f.is_normal)) | (0x4*(f.is_neg and f.is_subnormal)) | (0x8*(f.is_neg and f.is_zero)) | (0x10*(not f.is_neg and f.is_zero)) | (0x20*(not f.is_neg and f.is_subnormal)) | (0x40*(not f.is_neg and f.is_normal)) | (0x80*(not f.is_neg and f.is_inf)) | (0x100*(f.is_snan)) | (0x200*(f.is_qnan))
+    def _fadd_s    (self, rs1, rs2, rd, rm,   **_): self.pc+=4; f = f32.add(self.f.raw_s[rs1], self.f.raw_s[rs2]                                            , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.s[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fsub_s    (self, rs1, rs2, rd, rm,   **_): self.pc+=4; f = f32.add(self.f.raw_s[rs1], self.f.raw_s[rs2]^0x80000000                                 , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.s[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fmul_s    (self, rs1, rs2, rd, rm,   **_): self.pc+=4; f = f32.mul(self.f.raw_s[rs1], self.f.raw_s[rs2]                                            , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.s[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fdiv_s    (self, rs1, rs2, rd, rm,   **_): self.pc+=4; f = f32.div(self.f.raw_s[rs1], self.f.raw_s[rs2]                                            , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.s[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fmadd_s   (self, rs1,rs2,rs3,rd, rm, **_): self.pc+=4; f = f32.mad(self.f.raw_s[rs1], self.f.raw_s[rs2]              , self.f.raw_s[rs3]           , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.s[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fmsub_s   (self, rs1,rs2,rs3,rd, rm, **_): self.pc+=4; f = f32.mad(self.f.raw_s[rs1], self.f.raw_s[rs2]              , self.f.raw_s[rs3]^0x80000000, rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.s[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fnmsub_s  (self, rs1,rs2,rs3,rd, rm, **_): self.pc+=4; f = f32.mad(self.f.raw_s[rs1], self.f.raw_s[rs2]              , self.f.raw_s[rs3]           , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm, negate_product=True); self.f.s[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fnmadd_s  (self, rs1,rs2,rs3,rd, rm, **_): self.pc+=4; f = f32.mad(self.f.raw_s[rs1], self.f.raw_s[rs2]              , self.f.raw_s[rs3]^0x80000000, rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm, negate_product=True); self.f.s[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fmin_s    (self, rs1, rs2, rd,       **_): self.pc+=4; f = f32.min(self.f.raw_s[rs1], self.f.raw_s[rs2]                                                                                                                 ); self.f.s[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fmax_s    (self, rs1, rs2, rd,       **_): self.pc+=4; f = f32.max(self.f.raw_s[rs1], self.f.raw_s[rs2]                                                                                                                 ); self.f.s[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fsqrt_s   (self, rs1, rd, rm,        **_): self.pc+=4; f = f32.sqrt(self.f.raw_s[rs1]                                                              , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.s[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fld       (self, rd, rs1, imm12,     **_): self.pc+=4; self.f.d[rd] = self.load('Q', self.x[rs1]+imm12, zext(64, self.f.raw[rd]))
+    def _fsd       (self, rs1, rs2, imm12,    **_): self.pc+=4; self.store('Q', self.x[rs1]+imm12, zext(64, self.f.raw[rs2]))
+    def _fcvt_w_d  (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f64(self.f.raw_d[rs1]).to_i32_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
+    def _fcvt_wu_d (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f64(self.f.raw_d[rs1]).to_u32_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
+    def _fcvt_l_d  (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f64(self.f.raw_d[rs1]).to_i64_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
+    def _fcvt_lu_d (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f64(self.f.raw_d[rs1]).to_u64_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
+    def _fcvt_s_d  (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f64(self.f.raw_d[rs1]).to_f32_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.f.s[rd] = v; self.csr[self.FCSR] |= flags
+    def _fcvt_d_s  (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f32(self.f.raw_s[rs1]).to_f64_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.f.d[rd] = v; self.csr[self.FCSR] |= flags
+    def _fcvt_d_w  (self, rs1, rd, rm,        **_): self.pc+=4; self.f.d[rd] = float(sext(32, self.x[rs1])); self.csr[self.FCSR] |= self.f.d[rd] != sext(32, self.x[rs1])
+    def _fcvt_d_wu (self, rs1, rd, rm,        **_): self.pc+=4; self.f.d[rd] = float(zext(32, self.x[rs1])); self.csr[self.FCSR] |= self.f.d[rd] != zext(32, self.x[rs1])
+    def _fcvt_d_l  (self, rs1, rd, rm,        **_): self.pc+=4; self.f.d[rd] = float(sext(64, self.x[rs1])); self.csr[self.FCSR] |= self.f.d[rd] != sext(64, self.x[rs1])
+    def _fcvt_d_lu (self, rs1, rd, rm,        **_): self.pc+=4; self.f.d[rd] = float(zext(64, self.x[rs1])); self.csr[self.FCSR] |= self.f.d[rd] != zext(64, self.x[rs1])
+    def _fsgnj_d   (self, rs1, rs2, rd,       **_): self.pc+=4; self.f.d[rd] = self.f.raw_d[rs1]&0x7fffffff_ffffffff | self.f.raw_d[rs2]&f64.SIGN_BIT
+    def _fsgnjn_d  (self, rs1, rs2, rd,       **_): self.pc+=4; self.f.d[rd] = self.f.raw_d[rs1]&0x7fffffff_ffffffff | (~self.f.raw_d[rs2])&f64.SIGN_BIT
+    def _fsgnjx_d  (self, rs1, rs2, rd,       **_): self.pc+=4; self.f.d[rd] = self.f.raw_d[rs1] ^ self.f.raw_d[rs2]&f64.SIGN_BIT
+    def _fmv_x_d   (self, rs1, rd,            **_): self.pc+=4; self.x[rd] = sext(64, self.f.raw[rs1])
+    def _fmv_d_x   (self, rs1, rd,            **_): self.pc+=4; self.f.d[rd] = zext(64, self.x[rs1])
+    def _feq_d     (self, rs1, rs2, rd,       **_): self.pc+=4; self.x[rd] = self.f.d[rs1] == self.f.d[rs2]; self.csr[self.FCSR] |= (0x10*f64(self.f.raw_d[rs1]).is_snan) | (0x10*f64(self.f.raw_d[rs2]).is_snan)
+    def _flt_d     (self, rs1, rs2, rd,       **_): self.pc+=4; self.x[rd] = self.f.d[rs1] <  self.f.d[rs2]; self.csr[self.FCSR] |= (0x10*f64(self.f.raw_d[rs1]).is_nan) | (0x10*f64(self.f.raw_d[rs2]).is_nan)
+    def _fle_d     (self, rs1, rs2, rd,       **_): self.pc+=4; self.x[rd] = self.f.d[rs1] <= self.f.d[rs2]; self.csr[self.FCSR] |= (0x10*f64(self.f.raw_d[rs1]).is_nan) | (0x10*f64(self.f.raw_d[rs2]).is_nan)
+    def _fclass_d  (self, rs1, rd,            **_): self.pc+=4; f = f64(self.f.raw_d[rs1]); self.x[rd] = (0x1*(f.is_neg and f.is_inf)) | (0x2*(f.is_neg and f.is_normal)) | (0x4*(f.is_neg and f.is_subnormal)) | (0x8*(f.is_neg and f.is_zero)) | (0x10*(not f.is_neg and f.is_zero)) | (0x20*(not f.is_neg and f.is_subnormal)) | (0x40*(not f.is_neg and f.is_normal)) | (0x80*(not f.is_neg and f.is_inf)) | (0x100*(f.is_snan)) | (0x200*(f.is_qnan))
+    def _fadd_d    (self, rs1, rs2, rd, rm,   **_): self.pc+=4; f = f64.add(self.f.raw_d[rs1], self.f.raw_d[rs2]                                            , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.d[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fsub_d    (self, rs1, rs2, rd, rm,   **_): self.pc+=4; f = f64.add(self.f.raw_d[rs1], self.f.raw_d[rs2]^f64.SIGN_BIT                               , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.d[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fmul_d    (self, rs1, rs2, rd, rm,   **_): self.pc+=4; f = f64.mul(self.f.raw_d[rs1], self.f.raw_d[rs2]                                            , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.d[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fdiv_d    (self, rs1, rs2, rd, rm,   **_): self.pc+=4; f = f64.div(self.f.raw_d[rs1], self.f.raw_d[rs2]                                            , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.d[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fmadd_d   (self, rs1,rs2,rs3,rd, rm, **_): self.pc+=4; f = f64.mad(self.f.raw_d[rs1], self.f.raw_d[rs2]              , self.f.raw_d[rs3]           , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.d[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fmsub_d   (self, rs1,rs2,rs3,rd, rm, **_): self.pc+=4; f = f64.mad(self.f.raw_d[rs1], self.f.raw_d[rs2]              , self.f.raw_d[rs3]^f64.SIGN_BIT, rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.d[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fnmsub_d  (self, rs1,rs2,rs3,rd, rm, **_): self.pc+=4; f = f64.mad(self.f.raw_d[rs1], self.f.raw_d[rs2]              , self.f.raw_d[rs3]           , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm, negate_product=True); self.f.d[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fnmadd_d  (self, rs1,rs2,rs3,rd, rm, **_): self.pc+=4; f = f64.mad(self.f.raw_d[rs1], self.f.raw_d[rs2]              , self.f.raw_d[rs3]^f64.SIGN_BIT, rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm, negate_product=True); self.f.d[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fmin_d    (self, rs1, rs2, rd,       **_): self.pc+=4; f = f64.min(self.f.raw_d[rs1], self.f.raw_d[rs2]                                                                                                                 ); self.f.d[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fmax_d    (self, rs1, rs2, rd,       **_): self.pc+=4; f = f64.max(self.f.raw_d[rs1], self.f.raw_d[rs2]                                                                                                                 ); self.f.d[rd] = f.float; self.csr[self.FCSR] |= f.flags
+    def _fsqrt_d   (self, rs1, rd, rm,        **_): self.pc+=4; f = f64.sqrt(self.f.raw_d[rs1]                                                              , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.d[rd] = f.float; self.csr[self.FCSR] |= f.flags
     def hook_exec(self): return True
     def unimplemented(self, **_): print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}')
     def step(self, trace=True):
