@@ -37,25 +37,44 @@ class flt:
         self.is_snan = self.is_nan and not self.is_qnan
         self.e = ((self.raw&self.EXP_MASK)>>self.TLEN) - self.EXP_BIAS
         self.is_subnormal = (self.e==-self.EXP_BIAS) and not self.is_zero
+        self.flags |= FLAG_UF*((flags&FLAG_NX!=0) and (self.is_zero or self.is_subnormal))  # set underflow flag automatically
         self.is_normal = not (self.is_subnormal or self.is_inf or self.is_nan or self.is_zero)
         self.s = self.raw&self.TSIG_MASK
         if self.is_subnormal: self.e -= self.TLEN-self.s.bit_length()  # reduce exp by number of leading zeros
         elif self.is_normal: self.s |= self.SIG_ONE  # + implicit 1. if not (nan or inf or zero or subnormal)
-        self.flag_inexact = False
-        self.flag_invalid = False
-        self.flag_overflow = False
+
+    @classmethod
+    def normalized(cls, s_s, s_e, s_sign, rm=0):
+        flag_inexact = False
+        if s_s == 0: return cls(cls.SIGN_BIT*s_sign)  # zeros
+        if s_e <= -cls.EXP_BIAS:  # subnormal
+            shift = (cls.TLEN+1)-s_s.bit_length()
+            s_s, flag_inexact, carry = shift_right_and_round(s_s, s_sign, -shift+(-s_e-cls.EXP_BIAS+1), rm)
+            s_e = -cls.EXP_BIAS if s_s&cls.SIG_ONE == 0 else -cls.EXP_BIAS+1  # carry to the top? not subnormal anymore
+        else:
+            shift = (cls.TLEN+1)-s_s.bit_length()
+            s_s, flag_inexact, carry = shift_right_and_round(s_s, s_sign, -shift, rm)
+            if carry: s_e += 1
+        if s_e > cls.EXP_BIAS:  # overflow
+            if (rm==RM_RDN or rm==RM_RTZ) and not s_sign: return cls(cls.FMAX, FLAG_NX|FLAG_OF)  # RDN,RTZ cannot generate +inf
+            elif (rm==RM_RUP or rm==RM_RTZ) and s_sign: return cls(cls.FMAX|cls.SIGN_BIT, FLAG_NX|FLAG_OF)  # RUP,RTZ cannot generate -inf
+            else: return cls(cls.EXP_MASK | (cls.SIGN_BIT*s_sign), FLAG_NX|FLAG_OF) # +/-inf
+        return cls((s_e+cls.EXP_BIAS) << cls.TLEN | (s_s&cls.TSIG_MASK) | (cls.SIGN_BIT * s_sign), FLAG_NX*flag_inexact)
+
     @classmethod
     def min(cls, a, b):
         a, b = cls(a), cls(b)
         r = b if a.is_nan else a if b.is_nan else cls(a.raw|b.raw) if a.is_zero and b.is_zero else cls(min(a.float, b.float))
         r.flags = FLAG_NV*(a.is_snan or b.is_snan)
         return cls(cls.QNAN, r.flags) if r.is_nan else r
+
     @classmethod
     def max(cls, a, b):
         a, b = cls(a), cls(b)
         r = b if a.is_nan else a if b.is_nan else cls(a.raw&b.raw) if a.is_zero and b.is_zero else cls(max(a.float, b.float))
         r.flags = FLAG_NV*(a.is_snan or b.is_snan)
         return cls(cls.QNAN, r.flags) if r.is_nan else r
+
     def to_u32_and_flags(self, rm=0): v, f = self.to_int_and_flags_bounds(0       , (1<<32)-1, rm); return sext(32, v), f
     def to_u64_and_flags(self, rm=0): v, f = self.to_int_and_flags_bounds(0       , (1<<64)-1, rm); return sext(64, v), f
     def to_i32_and_flags(self, rm=0): v, f = self.to_int_and_flags_bounds(-(1<<31), (1<<31)-1, rm); return sext(32, v), f
@@ -75,41 +94,12 @@ class flt:
         if self.is_inf: return f32(f32.SIGN_BIT*self.is_neg | f32.EXP_MASK).float, 0
         if self.is_nan: return f32(f32.QNAN).float, FLAG_NV*self.is_snan
         r = f32.normalized(self.s, self.e, self.is_neg, rm)
-        r.flags |= FLAG_NX*r.flag_inexact
-        r.flags |= FLAG_UF*(r.flag_inexact and (r.is_zero or r.is_subnormal))
-        r.flags |= FLAG_OF*r.flag_overflow
         return r.float, r.flags
     def to_f64_and_flags(self, rm=0):
         if self.is_inf: return f64(f64.SIGN_BIT*self.is_neg | f64.EXP_MASK).float, 0
         if self.is_nan: return f64(f64.QNAN).float, FLAG_NV*self.is_snan
         r = f64.normalized(self.s, self.e, self.is_neg, rm)
-        r.flags |= FLAG_NX*r.flag_inexact
-        r.flags |= FLAG_UF*(r.flag_inexact and (r.is_zero or r.is_subnormal))
-        r.flags |= FLAG_OF*r.flag_overflow
         return r.float, r.flags
-    @classmethod
-    def normalized(cls, s_s, s_e, s_sign, rm=0):
-        flag_inexact = False
-        flag_overflow = False
-        if s_s == 0: return cls(cls.SIGN_BIT*s_sign)  # zeros
-        if s_e <= -cls.EXP_BIAS:  # subnormal
-            shift = (cls.TLEN+1)-s_s.bit_length()
-            s_s, flag_inexact, carry = shift_right_and_round(s_s, s_sign, -shift+(-s_e-cls.EXP_BIAS+1), rm)
-            s_e = -cls.EXP_BIAS if s_s&cls.SIG_ONE == 0 else -cls.EXP_BIAS+1  # carry to the top? not subnormal anymore
-        else:
-            shift = (cls.TLEN+1)-s_s.bit_length()
-            s_s, flag_inexact, carry = shift_right_and_round(s_s, s_sign, -shift, rm)
-            if carry: s_e += 1
-        if s_e > cls.EXP_BIAS:  # overflow
-            if (rm==RM_RDN or rm==RM_RTZ) and not s_sign: v = cls(cls.FMAX)  # RDN,RTZ cannot generate +inf
-            elif (rm==RM_RUP or rm==RM_RTZ) and s_sign: v = cls(cls.FMAX|cls.SIGN_BIT)  # RUP,RTZ cannot generate -inf
-            else: v = cls(cls.EXP_MASK | (cls.SIGN_BIT*s_sign)) # +/-inf
-            v.flag_inexact = True
-            v.flag_overflow = True
-            return v
-        v = cls((s_e+cls.EXP_BIAS) << cls.TLEN | (s_s&cls.TSIG_MASK) | (cls.SIGN_BIT * s_sign))
-        v.flag_inexact = flag_inexact
-        return v
 
     @classmethod
     def div(cls, a, b, rm=0):
@@ -125,17 +115,12 @@ class flt:
             if b.is_inf: return cls(cls.QNAN, FLAG_NV)
             return cls(float('-inf'), flags) if a.is_neg != b.is_neg else cls(float('inf'), flags)
         if b.is_inf: return cls(-0.0, flags) if a.is_neg != b.is_neg else cls(0.0, flags)
-
         a_s = a.s << (128-a.s.bit_length())
         b_s = b.s << (64-b.s.bit_length())
         r_s = a_s // b_s
         r_s |= r_s != -(a_s // -b_s)  # set LSB when ceil_div > floor_div. Fixes rounding and NX flag.
         r_e = a.e - b.e - 65 + r_s.bit_length()
-        r = cls.normalized(r_s, r_e, a.is_neg != b.is_neg, rm)
-        r.flags |= FLAG_NX*r.flag_inexact
-        r.flags |= FLAG_UF*(r.flag_inexact and (r.is_zero or r.is_subnormal))
-        r.flags |= FLAG_OF*r.flag_overflow
-        return r
+        return cls.normalized(r_s, r_e, a.is_neg != b.is_neg, rm)
 
     @classmethod
     def mul(cls, a, b, rm=0):
@@ -148,11 +133,7 @@ class flt:
         if a.is_zero or b.is_zero: return cls(-0.0, flags) if a.is_neg != b.is_neg else cls(0.0, flags)
         r_s = a.s * b.s
         r_e = a.e + b.e + r_s.bit_length() - a.s.bit_length() - b.s.bit_length() + 1
-        r = cls.normalized(r_s, r_e, a.is_neg != b.is_neg, rm)
-        r.flags |= FLAG_NX*r.flag_inexact
-        r.flags |= FLAG_UF*(r.flag_inexact and (r.is_zero or r.is_subnormal))
-        r.flags |= FLAG_OF*r.flag_overflow
-        return r
+        return cls.normalized(r_s, r_e, a.is_neg != b.is_neg, rm)
 
     @classmethod
     def add(cls, a, b, rm=0):
@@ -180,11 +161,7 @@ class flt:
         s_e = s_e - (bl_base-s_s.bit_length())
         if a.is_zero and b.is_zero and a.is_neg and b.is_neg: s_sign = True  # special case: -0 + -0 = -0
         else: s_sign = rm==RM_RDN if s_s==0 else s_sign # -0 when rounding down, else +0
-        r = cls.normalized(s_s, s_e, s_sign, rm)
-        r.flags |= FLAG_NX*r.flag_inexact
-        r.flags |= FLAG_UF*(r.flag_inexact and (r.is_zero or r.is_subnormal))
-        r.flags |= FLAG_OF*r.flag_overflow
-        return r
+        return cls.normalized(s_s, s_e, s_sign, rm)
 
     @classmethod
     def mad(cls, a, b, c, rm=0, negate_product=False):
@@ -222,28 +199,19 @@ class flt:
         s_e = s_e - (bl_base-s_s.bit_length())
         if r_s == 0 and c.is_zero and r_sign == c.is_neg: s_sign = r_sign  # fixes special case of -0 + -0 = -0
         else: s_sign = rm==RM_RDN if s_s==0 else s_sign # -0 when rounding down, else +0
-        r = cls.normalized(s_s, s_e, s_sign, rm)
-        r.flags |= FLAG_NX*r.flag_inexact
-        r.flags |= FLAG_UF*(r.flag_inexact and (r.is_zero or r.is_subnormal))
-        r.flags |= FLAG_OF*r.flag_overflow
-        return r
+        return cls.normalized(s_s, s_e, s_sign, rm)
 
     @classmethod
     def sqrt(cls, a, rm=0):
         a = cls(a)
-        flags = FLAG_NV*(a.is_snan)
-        if a.is_nan: return cls(cls.QNAN, flags)
-        if a.is_zero: return cls(cls.SIGN_BIT*a.is_neg, flags)
+        if a.is_nan: return cls(cls.QNAN, FLAG_NV*a.is_snan)
+        if a.is_zero: return cls(cls.SIGN_BIT*a.is_neg, FLAG_NV*a.is_snan)
         if a.is_neg: return cls(cls.QNAN, FLAG_NV)
         if a.is_inf: return cls(cls.EXP_MASK)  # inf
         a_s = a.s << (128-a.s.bit_length()+(a.e%2==0))
         r_s = math.isqrt(a_s)
         r_s |= r_s != (1+math.isqrt(a_s-1))  # set LSB when ceil_sqrt > floor_sqrt. Fixes rounding and NX flag.
-        r = cls.normalized(r_s, a.e//2, False, rm)
-        r.flags |= FLAG_NX*r.flag_inexact
-        r.flags |= FLAG_UF*(r.flag_inexact and (r.is_zero or r.is_subnormal))
-        r.flags |= FLAG_OF*r.flag_overflow
-        return r
+        return cls.normalized(r_s, a.e//2, False, rm)
 
     def __repr__(self) -> str: return ('- ' if self.is_neg else '+ ') + f's: {self.s:b} e: {self.e} raw: {hex(self.raw)} value: {self.float}'
 

@@ -8,8 +8,7 @@ from tinyrv import sim, zext
 def load_elf(vm, elf, trace=False):  # TODO: relocations
     if trace:
         print(f'ELF symbol table:')
-        for s in elf.symbols:
-            print(s)
+        for s in elf.symbols: print(s)
     for s in elf.segments:
         if trace: print(s)
         if s.virtual_size > 0 and len(bytes(s.content)) > 0:
@@ -273,7 +272,7 @@ def run_semihosting():
 def run_linux():
     parser = argparse.ArgumentParser(
                     prog='tinyrv-user-linux',
-                    description='Emulates a minimal linux userspace. Supports argv/argv and a few syscalls.')
+                    description='Emulates a minimal linux userspace. Supports argc/argv and a few syscalls.')
     parser.add_argument('-t', '--trace', action='store_true')
     parser.add_argument('elf', type=argparse.FileType('rb'))
     parser.add_argument('args', nargs='*')

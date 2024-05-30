@@ -1,12 +1,12 @@
 # tinyRV
 
-A RISC-V instruction decoder and instruction set simulator in less than 256 lines of python.
+A RISC-V instruction decoder and instruction set simulator in less than 1000 lines of python.
 
 **Mission**: Make the most useful RISC-V disassembler/simulator for understanding the ISA and reverse-engineering binaries with the least amount of easily extendable code. Simulation performance is secondary.
 
 - Uses official RISC-V specs to decode *every* specified RISC-V instruction.
 - Simulates the base ISAs and is easily extendable.
-- RV32IMACZicsr_Zifencei and RV64IMACZicsr_Zifencei compliance validated using riscof and riscv-tests (see Testing below).
+- RV32GC and RV64GC compliance validated using riscof and riscv-tests (see Testing below).
 - Boots Linux! Big thanks to CNLohr for [mini-rv32ima](https://github.com/cnlohr/mini-rv32ima).
 
 ## Getting Started

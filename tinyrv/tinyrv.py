@@ -62,7 +62,7 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
         def __init__(self, xlen, sim): self._x, self.xlen, self.sim = [0]*32, xlen, sim
         def __getitem__(self, i): return self._x[i]
         def __setitem__(self, i, d):
-            if i!=0 and (self.sim.trace_log is not None) and d!=self._x[i]: self.sim.trace_log.append(f'{iregs[i]}=' + (f'{zext(self.xlen, d):08x}' if self.xlen==32 else f'{zext(self.xlen, d):016x}'))
+            if i!=0 and (self.sim.trace_log is not None): self.sim.trace_log.append(f'{iregs[i]}=' + (f'{zext(self.xlen, d):08x}' if self.xlen==32 else f'{zext(self.xlen, d):016x}'))
             if i!=0: self._x[i] = d
         def __repr__(self): return '\n'.join(['  '.join([f'x{r+rr:02d}({(iregs[r+rr])[-2:]})={xfmt(self.xlen, self._x[r+rr])}' for r in range(0, 32, 8)]) for rr in range(8)])
     class rvfregs:
@@ -79,9 +79,18 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
         def __init__(self, flen, sim):
             self.raw, self.flen, self.sim = [0]*32, flen, sim
             self.s, self.raw_s, self.d, self.raw_d = self.accessor(self, 32), self.raw_accessor(self, 32), self.accessor(self, 64), self.raw_accessor(self, 64)
+    class rvcsrs:
+        def __init__(self, xlen, sim): self._csr, self.xlen, self.sim = [0]*4096, xlen, sim
+        def __getitem__(self, i): return self._csr[i]
+        def __setitem__(self, i, d):
+            if self.sim.trace_log is not None: self.sim.trace_log.append(f'{csrs[i]}=' + (f'{zext(self.xlen, d):08x}' if self.xlen==32 else f'{zext(self.xlen, d):016x}'))
+            if   i == self.sim.FCSR:   self._csr[self.sim.FCSR] = d&0xff; self._csr[self.sim.FFLAGS] = d&0x1f; self._csr[self.sim.FRM] = (d>>5)&7
+            elif i == self.sim.FFLAGS: self._csr[self.sim.FCSR] = self._csr[self.sim.FCSR]&0xe0 | d&0x1f
+            elif i == self.sim.FRM:    self._csr[self.sim.FCSR] = self._csr[self.sim.FCSR]&0x1f | ((d&7)<<5)
+            else: self._csr[i] = d
     def __init__(self, xlen=64, trap_misaligned=True):
         self.xlen, self.trap_misaligned, self.trace_log = xlen, trap_misaligned, []
-        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), self.rvfregs(64, self), [0]*4096, -1, 0, 3, 2<<20, collections.defaultdict(functools.partial(bytearray, 2<<20+2))  # 2-byte overlap for loading unaligned 32-bit opcodes
+        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), self.rvfregs(64, self), self.rvcsrs(self.xlen, self), -1, 0, 3, 2<<20, collections.defaultdict(functools.partial(bytearray, 2<<20+2))  # 2-byte overlap for loading unaligned 32-bit opcodes
         [setattr(self, n.upper(), i) for i, n in list(enumerate(iregs))+list(csrs.items())]  # convenience
     def hook_csr(self, csr, reqval): return reqval if (csr&0xc00)!=0xc00 else self.csr[csr]
     def notify_stored(self, addr): pass  # called *after* mem store
