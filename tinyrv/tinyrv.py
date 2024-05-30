@@ -83,7 +83,7 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
         def __init__(self, xlen, sim): self._csr, self.xlen, self.sim = [0]*4096, xlen, sim
         def __getitem__(self, i): return self._csr[i]
         def __setitem__(self, i, d):
-            if self.sim.trace_log is not None: self.sim.trace_log.append(f'{csrs[i]}=' + (f'{zext(self.xlen, d):08x}' if self.xlen==32 else f'{zext(self.xlen, d):016x}'))
+            if (self.sim.trace_log is not None) and (i != self.sim.MCYCLE): self.sim.trace_log.append(f'{csrs[i]}=' + (f'{zext(self.xlen, d):08x}' if self.xlen==32 else f'{zext(self.xlen, d):016x}'))
             if   i == self.sim.FCSR:   self._csr[self.sim.FCSR] = d&0xff; self._csr[self.sim.FFLAGS] = d&0x1f; self._csr[self.sim.FRM] = (d>>5)&7
             elif i == self.sim.FFLAGS: self._csr[self.sim.FCSR] = self._csr[self.sim.FCSR]&0xe0 | d&0x1f
             elif i == self.sim.FRM:    self._csr[self.sim.FCSR] = self._csr[self.sim.FCSR]&0x1f | ((d&7)<<5)

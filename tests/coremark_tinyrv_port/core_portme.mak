@@ -59,7 +59,7 @@ vpath %.s $(PORT_DIR)
 #	For a simple port, we assume self hosted compile and run, simple invocation of the executable
 
 LOAD = true
-RUN = tinyrv-vm-linux
+RUN = tinyrv-user-elf
 
 OEXT = .o
 EXE = .bin

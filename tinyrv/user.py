@@ -51,151 +51,11 @@ class kernel_stat2:
     __glibc_r1: dcs.I32 = 0
     __glibc_r2: dcs.I32 = 0
 
-class linux(sim):
-    def __init__(self, elf_file, args=[], trace=False):
+class elf_runner(sim):
+    def __init__(self, elf_file, args=[], trace=False, trap_misaligned=False):
         elf = lief.parse(elf_file)
         assert elf.header.machine_type == lief.ELF.ARCH.RISCV
-        super().__init__(xlen=32 if elf.header.identity_class == lief.ELF.ELF_CLASS.CLASS32 else 64, trap_misaligned=False)
-        self.elf_file, self.elf = elf_file, elf
-        self.trace = trace
-        load_elf(self, self.elf, trace=trace)
-        heap_end_sym = self.elf.get_symbol('heap_end.0')
-        self.heap_end = heap_end_sym.value if heap_end_sym is not None else 0xA0000000
-        self.keep_running = True
-        self.exitcode = 0
-        self.x[self.SP], arg_data = pack_args(args, self.xlen)  # puts argc and **argv on stack and init sp
-        self.copy_in(self.x[self.SP], arg_data)
-        self.start_time = time.perf_counter()
-
-    def _ecall(self, **_):
-        # helpful: https://jborza.com/post/2021-05-11-riscv-linux-syscalls/
-        syscall_no = self.x[self.A7]
-        if syscall_no == 80:  # fstat
-            fd = self.x[self.A0]
-            out_mem_ptr = self.x[self.A1]
-            self.copy_in(out_mem_ptr, kernel_stat2().pack())
-            self.x[self.A0] = 0  # success
-            self.pc += 4
-            return
-        elif syscall_no == 214:  # sbrk
-            increment = self.x[self.A0]
-            self.heap_end += increment
-            self.x[self.A0] = self.heap_end  # return new heap_end
-            self.pc += 4
-            return
-        elif syscall_no == 64:  # write
-            fd = self.x[self.A0]
-            ptr = self.x[self.A1]
-            length = self.x[self.A2]
-            #print(f'\nwriting {fd} {hex(ptr)} {length}\n')
-            data = self.copy_out(ptr, length)
-            s = data.decode()
-            if fd == 1:
-                print(s, end='', flush=True)
-                self.x[self.A0] = length
-                self.pc += 4
-                return
-            elif fd == 2:
-                print(s, end='', flush=True, file=sys.stderr)
-                self.x[self.A0] = length
-                self.pc += 4
-                return
-            else:
-                print(f'write to unknown file handle')
-        elif syscall_no == 57:  # close
-            fd = self.x[self.A0]
-            #print(f'close file {fd}')
-            self.x[self.A0] = 0  # success
-            self.pc += 4
-            return
-        elif syscall_no == 93:  # exit
-            self.exitcode = self.x[self.A0]
-            if self.trace: print(f'exit {self.exitcode}')
-            self.x[self.A0] = 0  # success
-            self.pc += 0  # stop here. self.run will return since pc is unchanged.
-            return
-        else:
-            print(f'linux: unimplemented syscall {syscall_no} at {hex(self.pc)}')
-        self.mtrap(0, 8 if self.current_mode == 0 else 11)
-
-    def hook_exec(self):
-        if (self.cycle % 1000) == 0:
-            current_time = zext(32, int((time.perf_counter()-self.start_time)*1000000))
-            self.store('I', 0x1100bff8, current_time, notify=False)
-        return self.keep_running
-
-class semihosting(sim):
-    def __init__(self, elf_file, args=[], trace=False):
-        elf = lief.parse(elf_file)
-        assert elf.header.machine_type == lief.ELF.ARCH.RISCV
-        super().__init__(xlen=32 if elf.header.identity_class == lief.ELF.ELF_CLASS.CLASS32 else 64, trap_misaligned=False)
-        self.elf_file, self.elf = elf_file, elf
-        self.trace = trace
-        load_elf(self, self.elf, trace=trace)
-        self.exitcode = 0
-        self.x[self.SP], arg_data = pack_args(args, self.xlen)  # puts argc and **argv on stack and init sp
-        self.copy_in(self.x[self.SP], arg_data)
-
-    def _ebreak(self, **_):
-        if self.load('I', self.op.addr-4, 0, notify=False) != 0x01f01013: return super()._ebreak()  # check slli zero,zero,0x1f before
-        if self.load('I', self.op.addr+4, 0, notify=False) != 0x40705013: return super()._ebreak()  # check srai zero,zero,0x7 after
-        # we have a semihost call
-        semihost_no = self.x[self.A0]
-        semihost_param = self.x[self.A1]
-        ptr_bytes = 4 if self.xlen == 32 else 8
-        ptr_fmt = 'I' if self.xlen == 32 else 'Q'
-        if semihost_no == 1:  # open
-            file_ptr = self.load('I', semihost_param, 0, notify=False)
-            s = []
-            while (c := self.load('B', file_ptr, 0, notify=False)) != 0:
-                s.append(chr(c))
-                file_ptr += 1
-            fname = ''.join(s)
-            mode = self.load(ptr_fmt, semihost_param+ptr_bytes, 0, notify=False)
-            #fnlen = self.load('I', semihost_param+ptr_bytes*2, 0, notify=False)
-            handle = {(':tt', 0): 1, (':tt', 4): 2, (':tt', 8): 3}.get((fname, mode), -1)  # r:stdin, w:stdout, a:stderr
-            #print(f'open {fname} mode {mode} -> {handle}')
-            self.x[self.A0] = handle
-            self.pc += 4
-        elif semihost_no == 0x0c:  # flen
-            handle = self.load(ptr_fmt, semihost_param, 0, notify=False)
-            flen = 0
-            #print(f'flen {handle} -> {flen}')
-            self.x[self.A0] = flen
-            self.pc += 4
-        elif semihost_no == 0x09:  # istty
-            handle = self.load(ptr_fmt, semihost_param, 0, notify=False)
-            #print(f'istty {handle} -> 1')
-            self.x[self.A0] = 1
-            self.pc += 4
-        elif semihost_no == 0x05:  # write
-            handle = self.load(ptr_fmt, semihost_param, 0, notify=False)
-            ptr = self.load(ptr_fmt, semihost_param+ptr_bytes, 0, notify=False)
-            length = self.load(ptr_fmt, semihost_param+ptr_bytes*2, 0, notify=False)
-            s = self.copy_out(ptr, length).decode()
-            print(s, end='', flush=True)
-            #print(f'write {hex(ptr)} {length}')
-            self.x[self.A0] = 0
-            self.pc += 4
-        elif semihost_no == 0x02:  # close
-            handle = self.load(ptr_fmt, semihost_param, 0, notify=False)
-            #print(f'close {handle} -> 0')
-            self.x[self.A0] = 0
-            self.pc += 4
-        elif semihost_no == 0x18:  # exit
-            reason = semihost_param
-            #print(f'exit {hex(reason)} -> 0')
-            self.x[self.A0] = 0
-            self.exitcode = semihost_param != 0x20026  # exit 1 if not a normal application exit.
-        else:
-            print(f'unknown semihost {hex(semihost_no)} {hex(semihost_param)} from {hex(self.op.addr)}')
-            return super()._ebreak()
-
-class htif(sim):  # Berkeley Host-Target Interface (HTIF)
-    def __init__(self, elf_file, args=[], trace=False):
-        elf = lief.parse(elf_file)
-        assert elf.header.machine_type == lief.ELF.ARCH.RISCV
-        super().__init__(xlen=32 if elf.header.identity_class == lief.ELF.ELF_CLASS.CLASS32 else 64, trap_misaligned=True)
+        super().__init__(xlen=32 if elf.header.identity_class == lief.ELF.ELF_CLASS.CLASS32 else 64, trap_misaligned=trap_misaligned)
         self.elf_file, self.elf = elf_file, elf
         self.trace = trace
         load_elf(self, self.elf, trace=trace)
@@ -210,10 +70,101 @@ class htif(sim):  # Berkeley Host-Target Interface (HTIF)
                          self.elf.entrypoint >> 32
         )
         self.pc = 0x1000
-        self.fromhost_addr = elf.get_symbol('fromhost').value
-        self.tohost_addr = elf.get_symbol('tohost').value
+        self.fromhost_addr = None if (sym := self.elf.get_symbol('fromhost')) is None else sym.value
+        self.tohost_addr = None if (sym := self.elf.get_symbol('tohost')) is None else sym.value
+        self.heap_end = 0xA0000000 if (sym := self.elf.get_symbol('heap_end.0')) is None else sym.value
+        self.x[self.SP], arg_data = pack_args(args, self.xlen)  # puts argc and **argv on stack and init sp
+        self.copy_in(self.x[self.SP], arg_data)
+        self.start_time = time.perf_counter()
         self.keep_running = True
         self.exitcode = 0
+
+    def _ecall(self, **_):  # helpful: https://jborza.com/post/2021-05-11-riscv-linux-syscalls/
+        syscall_no = self.x[self.A7]
+        if syscall_no == 80:  # fstat
+            fd = self.x[self.A0]
+            out_mem_ptr = self.x[self.A1]
+            self.copy_in(out_mem_ptr, kernel_stat2().pack())
+            self.x[self.A0] = 0  # success
+            self.pc += 4
+        elif syscall_no == 214:  # sbrk
+            increment = self.x[self.A0]
+            self.heap_end += increment
+            self.x[self.A0] = self.heap_end  # return new heap_end
+            self.pc += 4
+        elif syscall_no == 64:  # write
+            fd = self.x[self.A0]
+            ptr = self.x[self.A1]
+            length = self.x[self.A2]
+            #print(f'\nwriting {fd} {hex(ptr)} {length}\n')
+            data = self.copy_out(ptr, length)
+            s = data.decode()
+            if fd == 1:
+                print(s, end='', flush=True)
+                self.x[self.A0] = length
+                self.pc += 4
+            elif fd == 2:
+                print(s, end='', flush=True, file=sys.stderr)
+                self.x[self.A0] = length
+                self.pc += 4
+            else:
+                print(f'write to unknown file handle')
+        elif syscall_no == 57:  # close
+            fd = self.x[self.A0]
+            #print(f'close file {fd}')
+            self.x[self.A0] = 0  # success
+            self.pc += 4
+        elif syscall_no == 93:  # exit
+            self.exitcode = self.x[self.A0]
+            if self.trace: print(f'exit {self.exitcode}')
+            self.x[self.A0] = 0  # success
+            self.pc += 0  # stop here. self.run will return since pc is unchanged.
+        else:
+            self.mtrap(0, 8 if self.current_mode == 0 else 11)
+
+    def _ebreak(self, **_):
+        if self.load('I', self.op.addr-4, 0, notify=False) != 0x01f01013: return super()._ebreak()  # check slli zero,zero,0x1f before
+        if self.load('I', self.op.addr+4, 0, notify=False) != 0x40705013: return super()._ebreak()  # check srai zero,zero,0x7 after
+        # we have a semihost call
+        semihost_no, semihost_param = self.x[self.A0], self.x[self.A1]
+        ptr_bytes = 4 if self.xlen == 32 else 8
+        ptr_fmt = 'I' if self.xlen == 32 else 'Q'
+        if semihost_no == 1:  # open
+            file_ptr = self.load('I', semihost_param, 0, notify=False)
+            s = []
+            while (c := self.load('B', file_ptr, 0, notify=False)) != 0:
+                s.append(chr(c))
+                file_ptr += 1
+            fname = ''.join(s)
+            mode = self.load(ptr_fmt, semihost_param+ptr_bytes, 0, notify=False)
+            #fnlen = self.load('I', semihost_param+ptr_bytes*2, 0, notify=False)
+            self.x[self.A0] = {(':tt', 0): 1, (':tt', 4): 2, (':tt', 8): 3}.get((fname, mode), -1)  # r:stdin, w:stdout, a:stderr
+            self.pc += 4
+        elif semihost_no == 0x0c:  # flen
+            #handle = self.load(ptr_fmt, semihost_param, 0, notify=False); print(f'flen {handle} -> {flen}')
+            self.x[self.A0] = 0
+            self.pc += 4
+        elif semihost_no == 0x09:  # istty
+            #handle = self.load(ptr_fmt, semihost_param, 0, notify=False); print(f'istty {handle} -> 1')
+            self.x[self.A0] = 1
+            self.pc += 4
+        elif semihost_no == 0x05:  # write
+            handle = self.load(ptr_fmt, semihost_param, 0, notify=False)
+            ptr = self.load(ptr_fmt, semihost_param+ptr_bytes, 0, notify=False)
+            length = self.load(ptr_fmt, semihost_param+ptr_bytes*2, 0, notify=False)
+            print(self.copy_out(ptr, length).decode(), end='', flush=True)
+            self.x[self.A0] = 0
+            self.pc += 4
+        elif semihost_no == 0x02:  # close
+            #handle = self.load(ptr_fmt, semihost_param, 0, notify=False); print(f'close {handle} -> 0')
+            self.x[self.A0] = 0
+            self.pc += 4
+        elif semihost_no == 0x18:  # exit
+            self.x[self.A0] = 0
+            self.exitcode = semihost_param != 0x20026  # exit 1 if not a normal application exit.
+        else:
+            print(f'unknown semihost {hex(semihost_no)} {hex(semihost_param)} from {hex(self.op.addr)}')
+            return super()._ebreak()
 
     def notify_stored(self, addr):
         if addr == self.tohost_addr:
@@ -233,53 +184,28 @@ class htif(sim):  # Berkeley Host-Target Interface (HTIF)
                     print(f'unknown syscall {hex(data)} {which} {arg0} {hex(arg1)} {arg2}')
                     self.keep_running = False
         return super().notify_stored(addr)
+
     def hook_exec(self):
-        # if (self.cycle % 1000) == 0:
-        #     current_time = zext(32, int(time.perf_counter()*1000))
-        #     self.store('I', 0x10000000, current_time, notify=False)
+        if (self.cycle % 1000) == 0:
+            current_time = zext(32, int((time.perf_counter()-self.start_time)*1000000))
+            self.store('I', 0x1100bff8, current_time, notify=False)
         return self.keep_running
 
-def run_htif():
+def run_elf():
     parser = argparse.ArgumentParser(
-                    prog='tinyrv-user-htif',
-                    description='Runs an ELF in a Berkeley Host-Target Interface (HTIF) environment. Prints RISCOF signatures if available.')
+                    prog='tinyrv-user-elf',
+                    description='Emulates a minimal userspace with argc/argv, a few linux syscalls, semihosting, and Berkeley Host-Target Interface (HTIF). Prints RISCOF signatures if available.')
     parser.add_argument('-t', '--trace', action='store_true')
+    parser.add_argument('-tm', '--trap_misaligned', action='store_true', help='trap on misaligned memory accesses.')
     parser.add_argument('-l', '--limit', type=int, default=0)
     parser.add_argument('elf', type=argparse.FileType('rb'))
+    parser.add_argument('args', nargs='*')
     args = parser.parse_args()
-    vm = htif(args.elf, trace=args.trace)
+    vm = elf_runner(args.elf, [args.elf.name] + args.args, trace=args.trace, trap_misaligned=args.trap_misaligned)
     vm.run(args.limit, trace=args.trace)
     if vm.elf.get_symbol('begin_signature') is not None:
-        begin_signature = vm.elf.get_symbol('begin_signature').value
-        end_signature = vm.elf.get_symbol('end_signature').value
-        for addr in range(begin_signature, end_signature, 4):
-            print(f'{vm.load("I",addr):08x}')
-    return vm.exitcode
-
-def run_semihosting():
-    parser = argparse.ArgumentParser(
-                    prog='tinyrv-user-semihosting',
-                    description='Runs the binary with semihosting.')
-    parser.add_argument('-t', '--trace', action='store_true')
-    parser.add_argument('-l', '--limit', type=int, default=0)
-    parser.add_argument('elf', type=argparse.FileType('rb'))
-    parser.add_argument('args', nargs='*')
-    args = parser.parse_args()
-    vm = semihosting(args.elf, [args.elf.name] + args.args, trace=args.trace)
-    vm.run(args.limit, trace=args.trace)
-    return vm.exitcode
-
-def run_linux():
-    parser = argparse.ArgumentParser(
-                    prog='tinyrv-user-linux',
-                    description='Emulates a minimal linux userspace. Supports argc/argv and a few syscalls.')
-    parser.add_argument('-t', '--trace', action='store_true')
-    parser.add_argument('elf', type=argparse.FileType('rb'))
-    parser.add_argument('args', nargs='*')
-    args = parser.parse_args()
-    vm = linux(args.elf, [args.elf.name] + args.args, trace=args.trace)
-    vm.run(0, trace=args.trace)
+        for addr in range(vm.elf.get_symbol('begin_signature').value, vm.elf.get_symbol('end_signature').value, 4): print(f'{vm.load("I",addr):08x}')
     return vm.exitcode
 
 if __name__ == '__main__':
-    exit(run_linux())
+    exit(run_elf())

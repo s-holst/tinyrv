@@ -14,7 +14,7 @@ class tinyrv(pluginTemplate):
         super().__init__(*args, **kwargs)
         config = kwargs['config']
         self.pluginpath=os.path.abspath(config['pluginpath'])
-        self.dut_exe = "tinyrv-user-htif"
+        self.dut_exe = "tinyrv-user-elf"
         self.num_jobs = str(config.get('jobs', 1))
         self.isa_spec = os.path.abspath(config['ispec'])
         self.platform_spec = os.path.abspath(config['pspec'])
@@ -52,7 +52,7 @@ class tinyrv(pluginTemplate):
           cmd = self.compile_cmd.format(testentry['isa'].lower(), test, elf, compile_macros)
           if self.target_run:
             #simcmd = self.dut_exe + (' 64' if '64' in testentry['isa'] else ' 32')
-            simcmd = self.dut_exe + ' my.elf >DUT-tinyrv.signature'
+            simcmd = self.dut_exe + ' -tm my.elf >DUT-tinyrv.signature'
           else:
             simcmd = 'echo "NO RUN"'
 

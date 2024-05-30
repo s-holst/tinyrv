@@ -145,8 +145,8 @@ class virt(tinyrv.sim):
         self.last_checkpoint = 0
         self.wfi = False
         self.pc = self.ram_base
-        self.x[self.a0] = 0  # hart ID
-        self.x[self.a1] = dtb_addr
+        self.x[self.A0] = 0  # hart ID
+        self.x[self.A1] = dtb_addr
 
     def get_host_clock(self):  # 1 MHz ticks since start
         return self.cycle if self.deterministic else time.monotonic_ns()//1000-self.host_clock_start
@@ -211,8 +211,8 @@ class virt(tinyrv.sim):
     def _wfi(self, **_): self.pc += 4; self.csr[self.MSTATUS] |= 0x8; self.wfi = True
 
 def run_virt():
-    parser = argparse.ArgumentParser(prog='tinyrv-system-virt', description='Emulates a minimal system similar to "virt" from qemu.')
-    parser.add_argument('-k', '--kernel', type=argparse.FileType('rb'), help='Linux kernel image to boot')
+    parser = argparse.ArgumentParser(prog='tinyrv-system-virt', description='Emulates a minimal system similar to qemu\'s "virt".')
+    parser.add_argument('-k', '--kernel', type=argparse.FileType('rb'), help='kernel image to boot. Gets copied into memory at 0x80000000.')
     parser.add_argument('-m', '--memory', type=int, default=64, help='RAM size in MiB')
     parser.add_argument('-32', '--xlen32', action='store_true', help='Emulate a 32-bit system (default is 64-bit)')
     parser.add_argument('-f', '--flux', type=int, default=1000, help='Slows down the VM clock by this factor (default=1000) to mitigate thread starving. Actual simulation speed is about 1 MHz - running the clock real-time thrashes the 1 kHz scheduler loop and likely corrupts the stack. If your python is too slow, add more flux.')
