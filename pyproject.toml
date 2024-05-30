@@ -37,6 +37,7 @@ include = [
   "tests/riscof_config32.ini",
   "tests/riscof_config64.ini",
   "tests/mini.c",
+  "tests/fwsim.py",
   "tests/Makefile",
 ]
 
