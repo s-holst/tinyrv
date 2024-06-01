@@ -56,19 +56,15 @@ class elf_runner(sim):
         elf = lief.parse(elf_file)
         assert elf.header.machine_type == lief.ELF.ARCH.RISCV
         super().__init__(xlen=32 if elf.header.identity_class == lief.ELF.ELF_CLASS.CLASS32 else 64, trap_misaligned=trap_misaligned)
-        self.elf_file, self.elf = elf_file, elf
-        self.trace = trace
+        self.elf_file, self.elf, self.trace = elf_file, elf, trace
         load_elf(self, self.elf, trace=trace)
-        struct.pack_into('8I', *self.page_and_offset(0x1000),  # SAIL-style barebones bootloader
+        struct.pack_into('6IQ', *self.page_and_offset(0x1000),  # SAIL-style barebones bootloader
                          0x00000297,  # auipc  t0, 0
                          0x02028593,  # addi   a1, t0, 0x20
                          0xF1402573,  # csrrs  a0, mhartid, zero
                          0x0182A283 if self.xlen==32 else 0x0182B283,  # lw/ld     t0, 0x18(t0)
                          0x00028067,  # jalr   zero, 0x0(t0)
-                         0,
-                         self.elf.entrypoint & 0xffffffff,
-                         self.elf.entrypoint >> 32
-        )
+                         0, self.elf.entrypoint)
         self.pc = 0x1000
         self.fromhost_addr = None if (sym := self.elf.get_symbol('fromhost')) is None else sym.value
         self.tohost_addr = None if (sym := self.elf.get_symbol('tohost')) is None else sym.value
@@ -81,46 +77,31 @@ class elf_runner(sim):
 
     def _ecall(self, **_):  # helpful: https://jborza.com/post/2021-05-11-riscv-linux-syscalls/
         syscall_no = self.x[self.A7]
+        self.pc += 4
         if syscall_no == 80:  # fstat
-            fd = self.x[self.A0]
-            out_mem_ptr = self.x[self.A1]
+            fd, out_mem_ptr = self.x[self.A0], self.x[self.A1]
             self.copy_in(out_mem_ptr, kernel_stat2().pack())
             self.x[self.A0] = 0  # success
-            self.pc += 4
         elif syscall_no == 214:  # sbrk
-            increment = self.x[self.A0]
-            self.heap_end += increment
+            self.heap_end += self.x[self.A0]  # increment
             self.x[self.A0] = self.heap_end  # return new heap_end
-            self.pc += 4
         elif syscall_no == 64:  # write
-            fd = self.x[self.A0]
-            ptr = self.x[self.A1]
-            length = self.x[self.A2]
-            #print(f'\nwriting {fd} {hex(ptr)} {length}\n')
+            fd, ptr, length = self.x[self.A0], self.x[self.A1], self.x[self.A2]
             data = self.copy_out(ptr, length)
-            s = data.decode()
-            if fd == 1:
-                print(s, end='', flush=True)
-                self.x[self.A0] = length
-                self.pc += 4
-            elif fd == 2:
-                print(s, end='', flush=True, file=sys.stderr)
-                self.x[self.A0] = length
-                self.pc += 4
+            if fd not in {1, 2}: print(f'write to unknown file handle'); self.pc -= 4  # stop. self.run will return since pc is unchanged.
             else:
-                print(f'write to unknown file handle')
+                print(data.decode(), end='', flush=True, file=sys.stdout if fd==1 else sys.stderr)
+                self.x[self.A0] = length
         elif syscall_no == 57:  # close
             fd = self.x[self.A0]
-            #print(f'close file {fd}')
             self.x[self.A0] = 0  # success
-            self.pc += 4
         elif syscall_no == 93:  # exit
             self.exitcode = self.x[self.A0]
             if self.trace: print(f'exit {self.exitcode}')
             self.x[self.A0] = 0  # success
-            self.pc += 0  # stop here. self.run will return since pc is unchanged.
+            self.pc -= 4  # stop. self.run will return since pc is unchanged.
         else:
-            self.mtrap(0, 8 if self.current_mode == 0 else 11)
+            self.pc -= 4; self.mtrap(0, 8 if self.current_mode == 0 else 11)
 
     def _ebreak(self, **_):
         if self.load('I', self.op.addr-4, 0, notify=False) != 0x01f01013: return super()._ebreak()  # check slli zero,zero,0x1f before

@@ -81,22 +81,27 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
             self.s, self.raw_s, self.d, self.raw_d = self.accessor(self, 32), self.raw_accessor(self, 32), self.accessor(self, 64), self.raw_accessor(self, 64)
     class rvcsrs:
         def __init__(self, xlen, sim): self._csr, self.xlen, self.sim = [0]*4096, xlen, sim
-        def __getitem__(self, i): return self._csr[i]
+        def __getitem__(self, i):
+            if i == self.sim.TSELECT: return 1  # Return constant 1 for sw to discover that we don't support for any debug triggers.
+            elif i == self.sim.MISA: return (0x40000000 if self.sim.xlen==32 else 0x80000000) | 0b1000000101101 # M______F_DC_A
+            else: return self._csr[i]
         def __setitem__(self, i, d):
             if (self.sim.trace_log is not None) and (i != self.sim.MCYCLE): self.sim.trace_log.append(f'{csrs[i]}=' + (f'{zext(self.xlen, d):08x}' if self.xlen==32 else f'{zext(self.xlen, d):016x}'))
-            if   i == self.sim.FCSR:   self._csr[self.sim.FCSR] = d&0xff; self._csr[self.sim.FFLAGS] = d&0x1f; self._csr[self.sim.FRM] = (d>>5)&7
-            elif i == self.sim.FFLAGS: self._csr[self.sim.FCSR] = self._csr[self.sim.FCSR]&0xe0 | d&0x1f
-            elif i == self.sim.FRM:    self._csr[self.sim.FCSR] = self._csr[self.sim.FCSR]&0x1f | ((d&7)<<5)
+            if   i == self.sim.FCSR:    self._csr[self.sim.FCSR] = d&0xff; self._csr[self.sim.FFLAGS] = d&0x1f; self._csr[self.sim.FRM] = (d>>5)&7
+            elif i == self.sim.FFLAGS:  self._csr[self.sim.FCSR] = self._csr[self.sim.FCSR]&0xe0 | d&0x1f
+            elif i == self.sim.FRM:     self._csr[self.sim.FCSR] = self._csr[self.sim.FCSR]&0x1f | ((d&7)<<5)
+            elif i == self.sim.MSTATUS and ((d>>11)&3) < 3: self._csr[i] = d & ~(3<<11)  # MPP should read back 0 to advertise S-mode unsupported
             else: self._csr[i] = d
     def __init__(self, xlen=64, trap_misaligned=True):
         self.xlen, self.trap_misaligned, self.trace_log = xlen, trap_misaligned, []
         self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), self.rvfregs(64, self), self.rvcsrs(self.xlen, self), -1, 0, 3, 2<<20, collections.defaultdict(functools.partial(bytearray, 2<<20+2))  # 2-byte overlap for loading unaligned 32-bit opcodes
         [setattr(self, n.upper(), i) for i, n in list(enumerate(iregs))+list(csrs.items())]  # convenience
+        self.csr[self.MSTATUS] = 0x6000  # FPU is active by default
     def hook_csr(self, csr, reqval): return reqval if (csr&0xc00)!=0xc00 else self.csr[csr]
     def notify_stored(self, addr): pass  # called *after* mem store
     def notify_loading(self, addr): pass  # called *before* mem load
     def mtrap(self, tval, cause):
-        self.csr[self.MTVAL], self.csr[self.MEPC], self.csr[self.MCAUSE], self.pc = zext(self.xlen,tval), self.op.addr, cause, zext(self.xlen,self.csr[self.MTVEC]&(~3))  # TODO: vectored interrupts
+        self.csr[self.MTVAL], self.csr[self.MEPC], self.csr[self.MCAUSE], self.pc = zext(self.xlen,tval), sext(self.xlen, self.op.addr), cause, zext(self.xlen,self.csr[self.MTVEC]&(~3))  # TODO: vectored interrupts
         if self.trace_log is not None: self.trace_log.append(f'mtrap from_mode={self.current_mode} cause={hex(cause)} tval={hex(tval)}')
         self.csr[self.MSTATUS], self.current_mode = ((self.csr[self.MSTATUS]&0x08) << 4) | (self.current_mode << 11), 3
     def page_and_offset_iter(self, addr, nbytes, doffset=0):
@@ -111,7 +116,8 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
         for page, poffset, doffset, chunk in self.page_and_offset_iter(addr, nbytes): data[doffset:doffset+chunk] = page[poffset:poffset+chunk]
         return data
     def page_and_offset(self, addr): return self.mem_pages[addr&~(self.mem_psize-1)], addr&(self.mem_psize-1)
-    def store(self, format, addr, data, notify=True):
+    def store(self, format, addr, data, notify=True, cond=True):
+        if not cond: return
         if self.trace_log is not None: self.trace_log.append(f'{xfmt(struct.calcsize(format)*8, data)}->mem[{xfmt(self.xlen, addr)}]')
         if self.trap_misaligned and addr&(struct.calcsize(format)-1) != 0: self.mtrap(addr, 6)
         else: struct.pack_into(format, *self.page_and_offset(zext(self.xlen,addr)), data)
@@ -165,7 +171,9 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
     def _slliw     (self, rd, rs1, shamtw,    **_): self.pc+=4; self.x[rd] = sext(32,                        self.x[rs1]  << shamtw)
     def _srliw     (self, rd, rs1, shamtw,    **_): self.pc+=4; self.x[rd] = sext(32,        zext(32,        self.x[rs1]) >> shamtw)
     def _sraiw     (self, rd, rs1, shamtw,    **_): self.pc+=4; self.x[rd] = sext(32,        sext(32,        self.x[rs1]) >> shamtw)
-    def _slli      (self, rd, rs1, shamtd,    **_): self.pc+=4; self.x[rd] = sext(self.xlen,                 self.x[rs1]  << shamtd)  # shared with RV64I
+    def _slli      (self, rd, rs1, shamtd,    **_):  # shared with RV64I
+        if self.xlen==32 and shamtd > 31: self.mtrap(self.op.data, 2)  # shift with more than 31 bits on 32-bit is illegal
+        else: self.pc+=4; self.x[rd] = sext(self.xlen, self.x[rs1] << shamtd)
     def _srai      (self, rd, rs1, shamtd,    **_): self.pc+=4; self.x[rd] = sext(self.xlen,                 self.x[rs1]  >> shamtd)  # shared with RV64I
     def _srli      (self, rd, rs1, shamtd,    **_): self.pc+=4; self.x[rd] = sext(self.xlen, zext(self.xlen, self.x[rs1]) >> shamtd)  # shared with RV64I
     def _sll       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen,                 self.x[rs1]  << (self.x[rs2]&(self.xlen-1)))
@@ -182,7 +190,7 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
     def _csrrwi    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, zimm                      )
     def _csrrsi    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]| zimm       )
     def _csrrci    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]&~zimm       )
-    def _mret      (self,                     **_): self.pc = zext(self.xlen, self.csr[self.MEPC]); mmode = (self.csr[self.MSTATUS]>>11)&3; self.csr[self.MSTATUS] = (self.current_mode << 11) | 0x80 | ((self.csr[self.MSTATUS]&0x80) >> 4); self.current_mode = mmode
+    def _mret      (self,                     **_): self.pc = zext(self.xlen, self.csr[self.MEPC]); mmode = (self.csr[self.MSTATUS]>>11)&3; self.csr[self.MSTATUS] = self.csr[self.MSTATUS] & ~(0x19ff) | (self.current_mode << 11) | 0x80 | ((self.csr[self.MSTATUS]&0x80) >> 4); self.current_mode = mmode
     def _ecall     (self,                     **_): self.mtrap(0, 8 if self.current_mode == 0 else 11)
     def _ebreak    (self,                     **_): self.mtrap(self.op.addr, 3)
     def _mul       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )           )
@@ -217,13 +225,9 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
     def _amomaxu_d (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, max(zext(64,tmp), zext(64,ors2)))); self.x[rd]=tmp
     def _amominu_d (self, rd, rs1, rs2,       **_): self.pc+=4; ors1, ors2 = self.x[rs1], self.x[rs2]; tmp = self.load('q', self.x[rs1], self.x[rd]); self.store('q', ors1, sext(64, min(zext(64,tmp), zext(64,ors2)))); self.x[rd]=tmp
     def _lr_w      (self, rd, rs1,            **_): self.pc+=4; self.lr_res_addr = self.x[rs1]; self.x[rd] = self.load('i', self.x[rs1], self.x[rd])
-    def _sc_w      (self, rd, rs1, rs2,       **_):
-        if self.lr_res_addr == self.x[rs1]: self.pc+=4; self.lr_res_addr = -1; self.store('i', self.x[rs1], sext(32, self.x[rs2])); self.x[rd] = 0
-        else:                               self.pc+=4; self.lr_res_addr = -1;                                                      self.x[rd] = 1
     def _lr_d      (self, rd, rs1,            **_): self.pc+=4; self.lr_res_addr = self.x[rs1]; self.x[rd] = self.load('q', self.x[rs1], self.x[rd])
-    def _sc_d      (self, rd, rs1, rs2,       **_):
-        if self.lr_res_addr == self.x[rs1]: self.pc+=4; self.lr_res_addr = -1; self.store('q', self.x[rs1], sext(64, self.x[rs2])); self.x[rd] = 0
-        else:                               self.pc+=4; self.lr_res_addr = -1;                                                      self.x[rd] = 1
+    def _sc_w      (self, rd, rs1, rs2,       **_): self.pc+=4; self.store('i', self.x[rs1], sext(32, self.x[rs2]), cond=self.lr_res_addr==self.x[rs1]); self.x[rd] = self.lr_res_addr!=self.x[rs1]; self.lr_res_addr = -1
+    def _sc_d      (self, rd, rs1, rs2,       **_): self.pc+=4; self.store('q', self.x[rs1], sext(64, self.x[rs2]), cond=self.lr_res_addr==self.x[rs1]); self.x[rd] = self.lr_res_addr!=self.x[rs1]; self.lr_res_addr = -1
     def _c_ebreak  (self,                     **_): self.mtrap(self.op.addr, 3)
     def _c_nop     (self,                     **_): self.pc+=2;  # c.nop also required to pass test rv32i_m/privilege/src/misalign-jal-01.S
     def _c_lui     (self, rd_n2, nzimm18,     **_): self.pc+=2; self.x[rd_n2]      = nzimm18
@@ -242,12 +246,14 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
     def _c_andi    (self, rd_rs1_p, imm6,     **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, self.x[rd_rs1_p+8] & imm6)
     def _c_srai    (self, rd_rs1_p, nzuimm6,  **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, self.x[rd_rs1_p+8] >> nzuimm6)
     def _c_srli    (self, rd_rs1_p, nzuimm6,  **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, zext(self.xlen, self.x[rd_rs1_p+8])  >> nzuimm6)
-    def _c_addi4spn(self, rd_p, nzuimm10,     **_): self.pc+=2; self.x[rd_p+8]     = self.x[2] + nzuimm10
     def _c_lw      (self, rd_p, rs1_p, uimm7, **_): self.pc+=2; self.x[rd_p+8]     = self.load('i', self.x[rs1_p+8]+uimm7, self.x[rd_p+8])
     def _c_ld      (self, rd_p, rs1_p, uimm8, **_): self.pc+=2; self.x[rd_p+8]     = self.load('q', self.x[rs1_p+8]+uimm8, self.x[rd_p+8])
     def _c_lwsp    (self, rd_n0, uimm8sp,     **_): self.pc+=2; self.x[rd_n0]      = self.load('i', self.x[2]+uimm8sp, self.x[rd_n0])
     def _c_ldsp    (self, rd_n0, uimm9sp,     **_): self.pc+=2; self.x[rd_n0]      = self.load('q', self.x[2]+uimm9sp, self.x[rd_n0])
     def _c_addi16sp(self, nzimm10,            **_): self.pc+=2; self.x[2]         += nzimm10
+    def _c_addi4spn(self, rd_p, nzuimm10,     **_):
+        if nzuimm10!=0 or rd_p!=0: self.pc+=2; self.x[rd_p+8]     = self.x[2] + nzuimm10
+        else: self.mtrap(self.op.data, 2)  # 16-bit all-0: defined illegal instruction
     def _c_swsp    (self, rs2, uimm8sp_s,     **_): self.pc+=2; self.store('I', self.x[2]+uimm8sp_s,   zext(32,self.x[rs2]))
     def _c_sdsp    (self, rs2, uimm9sp_s,     **_): self.pc+=2; self.store('Q', self.x[2]+uimm9sp_s,   zext(64,self.x[rs2]))
     def _c_sw      (self, rs1_p,rs2_p, uimm7, **_): self.pc+=2; self.store('I', self.x[rs1_p+8]+uimm7, zext(32,self.x[rs2_p+8]))
@@ -263,7 +269,7 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
     def _c_ntl_s1  (self,                     **_): self.pc+=2
     def _c_ntl_all (self,                     **_): self.pc+=2
     def _flw       (self, rd, rs1, imm12,     **_): self.pc+=4; self.f.s[rd] = self.load('I', self.x[rs1]+imm12, zext(32, self.f.raw[rd]))
-    def _fsw       (self, rs1, rs2, imm12,    **_): self.pc+=4; self.store('I', self.x[rs1]+imm12, zext(32, self.f.raw[rs2]))
+    def _fsw       (self, rs1, rs2, imm12,    **_): self.pc+=4; self.store('I', self.x[rs1]+imm12, zext(32, self.f.raw[rs2]), cond=(self.csr[self.MSTATUS]>>13)&3)
     def _fcvt_w_s  (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f32(self.f.raw_s[rs1]).to_i32_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
     def _fcvt_wu_s (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f32(self.f.raw_s[rs1]).to_u32_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
     def _fcvt_l_s  (self, rs1, rd, rm,        **_): self.pc+=4; v, flags = f32(self.f.raw_s[rs1]).to_i64_and_flags(rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm); self.x[rd] = v; self.csr[self.FCSR] |= flags
