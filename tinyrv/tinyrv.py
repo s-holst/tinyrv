@@ -83,14 +83,17 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
         def __init__(self, xlen, sim): self._csr, self.xlen, self.sim = [0]*4096, xlen, sim
         def __getitem__(self, i):
             if i == self.sim.TSELECT: return 1  # Return constant 1 for sw to discover that we don't support for any debug triggers.
-            elif i == self.sim.MISA: return (0x40000000 if self.sim.xlen==32 else 0x80000000) | 0b1000000101101 # M______F_DC_A
+            elif i == self.sim.MISA: return (0x40000000 if self.sim.xlen==32 else 0x80000000_00000000) | 0b1000000101101 # M______F_DC_A
             else: return self._csr[i]
         def __setitem__(self, i, d):
             if (self.sim.trace_log is not None) and (i != self.sim.MCYCLE): self.sim.trace_log.append(f'{csrs[i]}=' + (f'{zext(self.xlen, d):08x}' if self.xlen==32 else f'{zext(self.xlen, d):016x}'))
             if   i == self.sim.FCSR:    self._csr[self.sim.FCSR] = d&0xff; self._csr[self.sim.FFLAGS] = d&0x1f; self._csr[self.sim.FRM] = (d>>5)&7
             elif i == self.sim.FFLAGS:  self._csr[self.sim.FCSR] = self._csr[self.sim.FCSR]&0xe0 | d&0x1f
             elif i == self.sim.FRM:     self._csr[self.sim.FCSR] = self._csr[self.sim.FCSR]&0x1f | ((d&7)<<5)
-            elif i == self.sim.MSTATUS and ((d>>11)&3) < 3: self._csr[i] = d & ~(3<<11)  # MPP should read back 0 to advertise S-mode unsupported
+            elif i == self.sim.MSTATUS:
+                if ((d>>11)&3) < 3: d = d & ~(3<<11)  # MPP should read back 0 to advertise S-mode unsupported
+                if self.sim.xlen==64: d = d & ~0x100000000 | 0x200000000  # UXLEN hard-wired to 64-bit
+                self._csr[i] = d
             else: self._csr[i] = d
     def __init__(self, xlen=64, trap_misaligned=True):
         self.xlen, self.trap_misaligned, self.trace_log = xlen, trap_misaligned, []
@@ -124,6 +127,7 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
         if notify: self.notify_stored(zext(self.xlen,addr))
     def load(self, format, addr, fallback=0, notify=True):
         if self.trap_misaligned and addr&(struct.calcsize(format)-1) != 0: self.mtrap(addr, 4); return fallback
+        if zext(self.xlen, addr) & (1<<63): self.mtrap(addr, 5); return fallback
         addr = zext(self.xlen, addr)
         if notify: self.notify_loading(addr)
         data = struct.unpack_from(format, *self.page_and_offset(addr))[0]
@@ -337,7 +341,8 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
         self.trace_log = [] if trace else None
         if self.hook_exec():
             self.cycle += 1; self.csr[self.MCYCLE] = zext(self.xlen, self.cycle)
-            getattr(self, '_'+self.op.name, self.unimplemented)(**self.op.args)  # dynamic instruction dispatch
+            if self.pc & (1<<63): self.mtrap(self.pc, 1)
+            else: getattr(self, '_'+self.op.name, self.unimplemented)(**self.op.args)  # dynamic instruction dispatch
             if trace: print(f'{zext(64,self.op.addr):08x}: {str(self.op):40} # [{self.cycle-1}]', ' '.join(self.trace_log))
             if trace and self.pc-self.op.addr not in (2, 4): print()
     def run(self, limit=0, bpts=set(), trace=True):
