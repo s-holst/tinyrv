@@ -97,7 +97,7 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
             else: self._csr[i] = d
     def __init__(self, xlen=64, trap_misaligned=True):
         self.xlen, self.trap_misaligned, self.trace_log = xlen, trap_misaligned, []
-        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.current_mode, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), self.rvfregs(64, self), self.rvcsrs(self.xlen, self), -1, 0, 3, 2<<20, collections.defaultdict(functools.partial(bytearray, 2<<20+2))  # 2-byte overlap for loading unaligned 32-bit opcodes
+        self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.plevel, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), self.rvfregs(64, self), self.rvcsrs(self.xlen, self), -1, 0, 3, 2<<20, collections.defaultdict(functools.partial(bytearray, 2<<20+2))  # 2-byte overlap for loading unaligned 32-bit opcodes
         [setattr(self, n.upper(), i) for i, n in list(enumerate(iregs))+list(csrs.items())]  # convenience
         self.csr[self.MSTATUS] = 0x6000  # FPU is active by default
     def hook_csr(self, csr, reqval): return reqval if (csr&0xc00)!=0xc00 else self.csr[csr]
@@ -105,8 +105,8 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
     def notify_loading(self, addr): pass  # called *before* mem load
     def mtrap(self, tval, cause):
         self.csr[self.MTVAL], self.csr[self.MEPC], self.csr[self.MCAUSE], self.pc = zext(self.xlen,tval), sext(self.xlen, self.op.addr), cause, zext(self.xlen,self.csr[self.MTVEC]&(~3))  # TODO: vectored interrupts
-        if self.trace_log is not None: self.trace_log.append(f'mtrap from_mode={self.current_mode} cause={hex(cause)} tval={hex(tval)}')
-        self.csr[self.MSTATUS], self.current_mode = ((self.csr[self.MSTATUS]&0x08) << 4) | (self.current_mode << 11), 3
+        if self.trace_log is not None: self.trace_log.append(f'mtrap from_plevel={self.plevel} cause={hex(cause)} tval={hex(tval)}')
+        self.csr[self.MSTATUS], self.plevel = ((self.csr[self.MSTATUS]&0x08) << 4) | (self.plevel << 11), 3
     def page_and_offset_iter(self, addr, nbytes, doffset=0):
         while nbytes > doffset:
             page, poffset = self.page_and_offset(zext(self.xlen, addr+doffset))
@@ -194,8 +194,8 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
     def _csrrwi    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, zimm                      )
     def _csrrsi    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]| zimm       )
     def _csrrci    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]&~zimm       )
-    def _mret      (self,                     **_): self.pc = zext(self.xlen, self.csr[self.MEPC]); mmode = (self.csr[self.MSTATUS]>>11)&3; self.csr[self.MSTATUS] = self.csr[self.MSTATUS] & ~(0x19ff) | (self.current_mode << 11) | 0x80 | ((self.csr[self.MSTATUS]&0x80) >> 4); self.current_mode = mmode
-    def _ecall     (self,                     **_): self.mtrap(0, 8 if self.current_mode == 0 else 11)
+    def _mret      (self,                     **_): self.pc = zext(self.xlen, self.csr[self.MEPC]); new_plevel = (self.csr[self.MSTATUS]>>11)&3; self.csr[self.MSTATUS] = self.csr[self.MSTATUS] & ~(0x19ff) | (self.plevel << 11) | 0x80 | ((self.csr[self.MSTATUS]&0x80) >> 4); self.plevel = new_plevel
+    def _ecall     (self,                     **_): self.mtrap(0, 8 if self.plevel == 0 else 11)
     def _ebreak    (self,                     **_): self.mtrap(self.op.addr, 3)
     def _mul       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )           )
     def _mulh      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )>>self.xlen)
@@ -252,16 +252,24 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
     def _c_srli    (self, rd_rs1_p, nzuimm6,  **_): self.pc+=2; self.x[rd_rs1_p+8] = sext(self.xlen, zext(self.xlen, self.x[rd_rs1_p+8])  >> nzuimm6)
     def _c_lw      (self, rd_p, rs1_p, uimm7, **_): self.pc+=2; self.x[rd_p+8]     = self.load('i', self.x[rs1_p+8]+uimm7, self.x[rd_p+8])
     def _c_ld      (self, rd_p, rs1_p, uimm8, **_): self.pc+=2; self.x[rd_p+8]     = self.load('q', self.x[rs1_p+8]+uimm8, self.x[rd_p+8])
+    def _c_flw     (self, rd_p, rs1_p, uimm7, **_): self.pc+=2; self.f.s[rd_p+8]   = self.load('I', self.x[rs1_p+8]+uimm7, self.x[rd_p+8])
+    def _c_fld     (self, rd_p, rs1_p, uimm8, **_): self.pc+=2; self.f.d[rd_p+8]   = self.load('Q', self.x[rs1_p+8]+uimm8, self.x[rd_p+8])
     def _c_lwsp    (self, rd_n0, uimm8sp,     **_): self.pc+=2; self.x[rd_n0]      = self.load('i', self.x[2]+uimm8sp, self.x[rd_n0])
     def _c_ldsp    (self, rd_n0, uimm9sp,     **_): self.pc+=2; self.x[rd_n0]      = self.load('q', self.x[2]+uimm9sp, self.x[rd_n0])
+    def _c_flwsp   (self, rd, uimm8sp,        **_): self.pc+=2; self.f.s[rd]       = self.load('I', self.x[2]+uimm8sp, self.x[rd])
+    def _c_fldsp   (self, rd, uimm9sp,        **_): self.pc+=2; self.f.d[rd]       = self.load('Q', self.x[2]+uimm9sp, self.x[rd])
     def _c_addi16sp(self, nzimm10,            **_): self.pc+=2; self.x[2]         += nzimm10
     def _c_addi4spn(self, rd_p, nzuimm10,     **_):
         if nzuimm10!=0 or rd_p!=0: self.pc+=2; self.x[rd_p+8]     = self.x[2] + nzuimm10
         else: self.mtrap(self.op.data, 2)  # 16-bit all-0: defined illegal instruction
     def _c_swsp    (self, rs2, uimm8sp_s,     **_): self.pc+=2; self.store('I', self.x[2]+uimm8sp_s,   zext(32,self.x[rs2]))
     def _c_sdsp    (self, rs2, uimm9sp_s,     **_): self.pc+=2; self.store('Q', self.x[2]+uimm9sp_s,   zext(64,self.x[rs2]))
+    def _c_fswsp   (self, rs2, uimm8sp_s,     **_): self.pc+=2; self.store('I', self.x[2]+uimm8sp_s,   zext(32,self.f.raw[rs2]), cond=(self.csr[self.MSTATUS]>>13)&3)
+    def _c_fsdsp   (self, rs2, uimm9sp_s,     **_): self.pc+=2; self.store('Q', self.x[2]+uimm9sp_s,   zext(64,self.f.raw[rs2]), cond=(self.csr[self.MSTATUS]>>13)&3)
     def _c_sw      (self, rs1_p,rs2_p, uimm7, **_): self.pc+=2; self.store('I', self.x[rs1_p+8]+uimm7, zext(32,self.x[rs2_p+8]))
     def _c_sd      (self, rs1_p,rs2_p, uimm8, **_): self.pc+=2; self.store('Q', self.x[rs1_p+8]+uimm8, zext(64,self.x[rs2_p+8]))
+    def _c_fsw     (self, rs1_p,rs2_p, uimm7, **_): self.pc+=2; self.store('I', self.x[rs1_p+8]+uimm7, zext(32,self.f.raw[rs2_p+8]), cond=(self.csr[self.MSTATUS]>>13)&3)
+    def _c_fsd     (self, rs1_p,rs2_p, uimm8, **_): self.pc+=2; self.store('Q', self.x[rs1_p+8]+uimm8, zext(64,self.f.raw[rs2_p+8]), cond=(self.csr[self.MSTATUS]>>13)&3)
     def _c_jalr    (self, rs1_n0,             **_): self.pc, self.x[1] = zext(self.xlen, self.x[rs1_n0])&(~1), sext(self.xlen, self.op.addr+2) # LSB=0
     def _c_jal     (self, imm12,              **_): self.pc, self.x[1] = zext(self.xlen, self.op.addr+imm12),  sext(self.xlen, self.op.addr+2)
     def _c_jr      (self, rs1_n0,             **_): self.pc = zext(self.xlen, self.x[rs1_n0])&(~1) # LSB=0
@@ -335,7 +343,7 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
     def _fmax_d    (self, rs1, rs2, rd,       **_): self.pc+=4; f = f64.max(self.f.raw_d[rs1], self.f.raw_d[rs2]                                                                                                                 ); self.f.d[rd] = f.float; self.csr[self.FCSR] |= f.flags
     def _fsqrt_d   (self, rs1, rd, rm,        **_): self.pc+=4; f = f64.sqrt(self.f.raw_d[rs1]                                                              , rm=(self.csr[self.FCSR]>>5)&7 if rm==7 else rm                     ); self.f.d[rd] = f.float; self.csr[self.FCSR] |= f.flags
     def hook_exec(self): return True
-    def unimplemented(self, **_): print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}')
+    def unimplemented(self, **_): print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}'); self.exitcode=77
     def step(self, trace=True):
         self.op = decode(struct.unpack_from('I', *self.page_and_offset(self.pc))[0], 0, self.xlen); self.op.addr=self.pc  # setting op.addr afterwards enables opcode caching.
         self.trace_log = [] if trace else None
@@ -343,7 +351,7 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
             self.cycle += 1; self.csr[self.MCYCLE] = zext(self.xlen, self.cycle)
             if self.pc & (1<<63): self.mtrap(self.pc, 1)
             else: getattr(self, '_'+self.op.name, self.unimplemented)(**self.op.args)  # dynamic instruction dispatch
-            if trace: print(f'{zext(64,self.op.addr):08x}: {str(self.op):40} # [{self.cycle-1}]', ' '.join(self.trace_log))
+            if trace: print(f'{zext(64,self.op.addr):08x}: {str(self.op):40} # P{self.plevel} [{self.cycle-1}]', ' '.join(self.trace_log))
             if trace and self.pc-self.op.addr not in (2, 4): print()
     def run(self, limit=0, bpts=set(), trace=True):
         while True:

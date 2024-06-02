@@ -192,7 +192,7 @@ class virt(tinyrv.sim):
         if self.csr[self.MSTATUS] & 0x8:  # master interrupt enable
             for irq in (11, 7, 3): # external, timer, software - in that order of priority.
                 if  self.csr[self.MIE] & self.csr[self.MIP] & (1<<irq):
-                    if self.trace_log is not None: print(f'\n{{mtrap from_mode={self.current_mode} irq={irq} cycle={self.cycle} pc={self.pc} op={str(self.op)}}}\n')  # print here, because op will not execute.
+                    if self.trace_log is not None: print(f'\n{{mtrap from_mode={self.plevel} irq={irq} cycle={self.cycle} pc={self.pc} op={str(self.op)}}}\n')  # print here, because op will not execute.
                     self.mtrap(0, tinyrv.sext(self.xlen, irq | (1<<(self.xlen-1))))
                     self.wfi = False
                     return True

@@ -3,6 +3,7 @@ all: test_mini32 test_mini64 test_mini32semi test_mini64semi run_riscv_tests run
 ############# riscv-software-src/riscv-tests
 
 run_riscv_tests: riscv-tests-compiled
+	#for i in riscv-tests/isa/rv??si-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-elf $$i || exit $$?; fi; done
 	for i in riscv-tests/isa/rv??ui-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-elf $$i || exit $$?; fi; done
 	for i in riscv-tests/isa/rv??ua-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-elf $$i || exit $$?; fi; done
 	for i in riscv-tests/isa/rv??um-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-elf $$i || exit $$?; fi; done
@@ -31,6 +32,18 @@ run_riscof: riscv-arch-test
 
 riscv-arch-test:
 	git clone https://github.com/riscv-non-isa/riscv-arch-test.git
+
+############# compressed float instructions test
+
+test_c_f_64: test_c_f.S
+	riscv64-unknown-elf-gcc -nostartfiles -march=rv64gc -mabi=lp64 test_c_f.S -o test_c_f_64
+
+test_c_f_32: test_c_f.S
+	riscv64-unknown-elf-gcc -nostartfiles -march=rv32gc -mabi=ilp32 test_c_f.S -o test_c_f_32
+
+test_c_f: test_c_f_64 test_c_f_32
+	tinyrv-user-elf test_c_f_32 || exit $$?
+	tinyrv-user-elf test_c_f_64 || exit $$?
 
 ############# mini
 

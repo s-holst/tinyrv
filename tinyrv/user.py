@@ -101,7 +101,7 @@ class elf_runner(sim):
             self.x[self.A0] = 0  # success
             self.pc -= 4  # stop. self.run will return since pc is unchanged.
         else:
-            self.pc -= 4; self.mtrap(0, 8 if self.current_mode == 0 else 11)
+            self.pc -= 4; self.mtrap(0, 8 if self.plevel == 0 else 11)
 
     def _ebreak(self, **_):
         if self.load('I', self.op.addr-4, 0, notify=False) != 0x01f01013: return super()._ebreak()  # check slli zero,zero,0x1f before
