@@ -1,6 +1,5 @@
-import struct, sys, math
-def zext(length, word): return word&((1<<length)-1)
-def sext(length, word): return word|~((1<<length)-1) if word&(1<<(length-1)) else zext(length, word)
+import struct, math
+from .common import zext, sext
 
 RM_RNE = 0  # nearest, ties to even
 RM_RTZ = 1  # towards zero
@@ -246,12 +245,3 @@ class f64(flt):
     def __init__(self, float_or_raw, flags=0):
         raw = zext(64, float_or_raw) if isinstance(float_or_raw, int) else struct.unpack('Q', struct.pack('d', float_or_raw))[0]
         super().__init__(struct.unpack('d', struct.pack('Q', raw))[0], raw, flags)
-
-if __name__ == "__main__":
-    p = [float(a) if '.' in a or 'inf' in a.lower() or 'nan' in a.lower() else int(a, 16) for a in sys.argv[1:]]
-    print(f64(p[0]))
-    #print(f64(p[1]))
-    #print(f32(p[2]))
-    r = f64.sqrt(p[0], rm=0)
-    #r = f64.mul(p[0], p[1], rm=0)
-    print(r, bin(r.flags))

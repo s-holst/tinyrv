@@ -29,7 +29,7 @@ _start:  # entry point
 
     la a0, dnumber
     c.fld fa0, (a0)  # compressed load double (available in rv64 and rv32)
-    fld ft0, (a0)  # normal load double
+    fld ft0, (a0)  # normal load double (ft0 is not supported in c.fld, so this one will stay uncompressed)
 
     li a0, 1
     feq.d a1, fa0, ft0
@@ -47,7 +47,7 @@ _start:  # entry point
 
     la a0, fnumber
     flw fa1, (a0)  # compressed load float (will assemble to c.flw in rv32)
-    flw ft1, (a0)  # normal load float
+    flw ft1, (a0)  # normal load float (ft1 is not supported in c.flw, so this one will stay uncompressed)
 
     li a0, 3
     feq.s a1, fa1, ft1

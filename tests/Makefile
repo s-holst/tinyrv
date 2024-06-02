@@ -1,4 +1,4 @@
-all: test_mini32 test_mini64 test_mini32semi test_mini64semi run_riscv_tests run_riscof run_coremark
+all: test_mini32 test_mini64 test_mini32semi test_mini64semi test_c_f run_riscv_tests run_riscof run_coremark
 
 ############# riscv-software-src/riscv-tests
 

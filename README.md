@@ -217,7 +217,7 @@ TinyRV comes with two virtual machines that can be lauched from the command line
 
 ## Dev Setup
 
-All core simulator code is in `tinyrv/tinyrv.py` and has no external dependencies.
+The core simulator code is in `tinyrv/sim.py` and has no external dependencies.
 tinyRV loads opcode specs from `tinyrv/opcodes.py`, which is auto-generated from [riscv-opcodes](https://github.com/riscv/riscv-opcodes) by `tinyrv_opcodes_gen.py`.
 
 Do this to re-generate:
@@ -316,4 +316,6 @@ The build configuration is in tests/br2_external_tinyrv.
 ## Related
 
 - [TinyFive](https://github.com/OpenMachine-ai/tinyfive)
-- [mini-rv32ima](https://github.com/cnlohr/mini-rv32ima)
+- [mini-rv32ima](https://github.com/cnlohr/mini-rv32ima) A tiny RV32IMA C-header simulator
+- [RARS](https://github.com/TheThirdOne/rars) A RISC-V assembler/simulator written in Java
+- [Pydgin](https://github.com/cornell-brg/pydgin) Last activity 2016

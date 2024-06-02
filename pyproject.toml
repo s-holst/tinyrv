@@ -42,7 +42,6 @@ include = [
 ]
 
 [project.scripts]
-tinyrv-dump = "tinyrv.tinyrv_dump:main"
-tinyrv-sim = "tinyrv.tinyrv_sim:main"
+tinyrv-dump = "tinyrv.dump:main"
 tinyrv-user-elf = "tinyrv.user:run_elf"
 tinyrv-system-virt = "tinyrv.system:run_virt"

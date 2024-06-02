@@ -1,1 +1,2 @@
-from .tinyrv import *
+from .sim import *
+from .dump import decoder
