@@ -3,7 +3,6 @@ all: test_mini32 test_mini64 test_mini32semi test_mini64semi test_c_f run_riscv_
 ############# riscv-software-src/riscv-tests
 
 run_riscv_tests: riscv-tests-compiled
-	#for i in riscv-tests/isa/rv??si-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-elf $$i || exit $$?; fi; done
 	for i in riscv-tests/isa/rv??ui-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-elf $$i || exit $$?; fi; done
 	for i in riscv-tests/isa/rv??ua-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-elf $$i || exit $$?; fi; done
 	for i in riscv-tests/isa/rv??um-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-elf $$i || exit $$?; fi; done
@@ -11,6 +10,7 @@ run_riscv_tests: riscv-tests-compiled
 	for i in riscv-tests/isa/rv??uf-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-elf $$i || exit $$?; fi; done
 	for i in riscv-tests/isa/rv??ud-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-elf $$i || exit $$?; fi; done
 	for i in riscv-tests/isa/rv??mi-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-elf $$i || exit $$?; fi; done
+	for i in riscv-tests/isa/rv??si-p-*; do if [[ ! $$i =~ "." ]]; then echo running $$i; tinyrv-user-elf $$i || exit $$?; fi; done
 
 riscv-tests-compiled: riscv-tests/isa/rv32ui-p-add
 

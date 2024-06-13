@@ -3,6 +3,9 @@ from .opcodes import csrs
 from .common import *
 from .fpu import f32, f64
 
+class Trap(Exception):
+    def __init__(self, tval, cause): super().__init__(); self.tval = tval; self.cause = cause
+
 class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
     class rvregs:
         def __init__(self, xlen, sim): self._x, self.xlen, self.sim = [0]*32, xlen, sim
@@ -36,23 +39,32 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
             if   i == self.sim.FCSR:    self._csr[self.sim.FCSR] = d&0xff; self._csr[self.sim.FFLAGS] = d&0x1f; self._csr[self.sim.FRM] = (d>>5)&7
             elif i == self.sim.FFLAGS:  self._csr[self.sim.FCSR] = self._csr[self.sim.FCSR]&0xe0 | d&0x1f
             elif i == self.sim.FRM:     self._csr[self.sim.FCSR] = self._csr[self.sim.FCSR]&0x1f | ((d&7)<<5)
-            elif i == self.sim.MSTATUS:
-                if ((d>>11)&3) < 3: d = d & ~(3<<11)  # MPP should read back 0 to advertise S-mode unsupported
-                if self.sim.xlen==64: d = d & ~0x100000000 | 0x200000000  # UXLEN hard-wired to 64-bit
+            else:
+                if self.sim.xlen==64 and (i==self.sim.MSTATUS or i==self.sim.SSTATUS): d = d & ~0x100000000 | 0x200000000  # UXLEN hard-wired to 64-bit
                 self._csr[i] = d
-            else: self._csr[i] = d
+                for csr1, csr2, mask in [(self.sim.MSTATUS, self.sim.SSTATUS, 0x80000003000de762 if self.sim.xlen==64 else 0x800de762), (self.sim.MIE, self.sim.SIE, 0x2222), (self.sim.MIP, self.sim.SIP, 0x2222)]:
+                    if i == csr1: self._csr[csr2] = self._csr[csr2]&~mask | d&mask
+                    elif i == csr2: self._csr[csr1] = self._csr[csr1]&~mask | d&mask
     def __init__(self, xlen=64, trap_misaligned=True):
         self.xlen, self.trap_misaligned, self.trace_log = xlen, trap_misaligned, []
         self.pc, self.x, self.f, self.csr, self.lr_res_addr, self.cycle, self.plevel, self.mem_psize, self.mem_pages = 0, self.rvregs(self.xlen, self), self.rvfregs(64, self), self.rvcsrs(self.xlen, self), -1, 0, 3, 2<<20, collections.defaultdict(functools.partial(bytearray, 2<<20+2))  # 2-byte overlap for loading unaligned 32-bit opcodes
         [setattr(self, n.upper(), i) for i, n in list(enumerate(iregs))+list(csrs.items())]  # convenience
         self.csr[self.MSTATUS] = 0x6000  # FPU is active by default
-    def hook_csr(self, csr, reqval): return reqval if (csr&0xc00)!=0xc00 else self.csr[csr]
+    def hook_csr(self, csr, reqval):
+        if (csr>>8)&3 > self.plevel: self.mtrap(self.op.data, 2); return self.csr[csr]  # insufficient privilege
+        elif (csr&0xc00)==0xc00: return self.csr[csr]  # read-only CSR
+        else: return reqval
     def notify_stored(self, addr): pass  # called *after* mem store
     def notify_loading(self, addr): pass  # called *before* mem load
     def mtrap(self, tval, cause):
-        self.csr[self.MTVAL], self.csr[self.MEPC], self.csr[self.MCAUSE], self.pc = zext(self.xlen,tval), sext(self.xlen, self.op.addr), cause, zext(self.xlen,self.csr[self.MTVEC]&(~3))  # TODO: vectored interrupts
-        if self.trace_log is not None: self.trace_log.append(f'mtrap from_plevel={self.plevel} cause={hex(cause)} tval={hex(tval)}')
-        self.csr[self.MSTATUS], self.plevel = ((self.csr[self.MSTATUS]&0x08) << 4) | (self.plevel << 11), 3
+        if self.trace_log is not None: self.trace_log.append(f'TRAP')
+        from_plevel, self.plevel = self.plevel, max(1, self.plevel) if self.csr._csr[self.MIDELEG if cause<0 else self.MEDELEG] & (1<<(cause&63)) else 3
+        if self.plevel == 3:
+            self.csr[self.MCAUSE], self.csr[self.MTVAL], self.csr[self.MEPC], self.pc = cause, zext(self.xlen,tval), sext(self.xlen, self.op.addr), zext(self.xlen,self.csr[self.MTVEC]&(~3))  # TODO: vectored interrupts
+            self.csr[self.MSTATUS] = self.csr[self.MSTATUS]&~(0x1888) | ((self.csr[self.MSTATUS]&0x08) << 4) | (from_plevel << 11)
+        else:  # S-mode
+            self.csr[self.SCAUSE], self.csr[self.STVAL], self.csr[self.SEPC], self.pc = cause, zext(self.xlen,tval), sext(self.xlen, self.op.addr), zext(self.xlen,self.csr[self.STVEC]&(~3))  # TODO: vectored interrupts
+            self.csr[self.SSTATUS] = self.csr[self.SSTATUS]&~(0x122) | ((self.csr[self.SSTATUS]&0x02) << 4) | (from_plevel << 8)
     def page_and_offset_iter(self, addr, nbytes, doffset=0):
         while nbytes > doffset:
             page, poffset = self.page_and_offset(zext(self.xlen, addr+doffset))
@@ -65,8 +77,57 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
         for page, poffset, doffset, chunk in self.page_and_offset_iter(addr, nbytes): data[doffset:doffset+chunk] = page[poffset:poffset+chunk]
         return data
     def page_and_offset(self, addr): return self.mem_pages[addr&~(self.mem_psize-1)], addr&(self.mem_psize-1)
+    def pa(self, addr, access='w'):
+        pl = (self.csr._csr[self.MSTATUS]>>11)&3 if self.plevel==3 and self.csr._csr[self.MSTATUS]&0x00020000 and access!='x' else self.plevel
+        if pl==3 or self.csr._csr[self.SATP]==0: return addr  # no virtual memory
+        satp = self.csr._csr[self.SATP]
+        pfault = Trap(addr, {'w':15, 'r':13, 'x':12}[access])
+        sum_bit = (self.csr._csr[self.MSTATUS]>>18)&1
+        mxr_bit = (self.csr._csr[self.MSTATUS]>>19)&1
+        if self.xlen==32 and (satp>>31)&1:
+            pte_paddr_mask = 0x3fffff000
+            pte_addr = ((satp&0x3fffff)<<12) | ((addr>>20)&0xffc)
+            pte = struct.unpack_from('I', *self.page_and_offset(pte_addr))[0]
+            if self.trace_log is not None: self.trace_log.append(f'pt1[{xfmt(self.xlen, pte_addr)}]->{xfmt(self.xlen, pte)}')
+            if (pte&1)==0 or (pte&2)==0 and (pte&4)!=0: raise pfault  # PTE valid?
+            superpage_mask = 0x3ff000
+            if (pte&2)==0 and (pte&8)==0:  # second level?
+                superpage_mask = 0
+                pte_addr = ((pte<<2)&0x3fffff000) | ((addr>>10)&0xffc)
+                pte = struct.unpack_from('I', *self.page_and_offset(pte_addr))[0]
+                if self.trace_log is not None: self.trace_log.append(f'pt0[{xfmt(self.xlen, pte_addr)}]->{xfmt(self.xlen, pte)}')
+                if (pte&1)==0 or (pte&2)==0 and (pte&4)!=0: raise pfault  # PTE valid?
+        elif self.xlen==64 and ((satp>>60)&0xf)==8:  # Sv39
+            pte_paddr_mask = 0xfffffffffff000
+            pte_addr = ((satp&0xfffffffffff)<<12) | ((addr>>27)&0xff8)
+            pte = struct.unpack_from('Q', *self.page_and_offset(pte_addr))[0]
+            if self.trace_log is not None: self.trace_log.append(f'pt2[{xfmt(self.xlen, pte_addr)}]->{xfmt(self.xlen, pte)}')
+            if (pte&1)==0 or (pte&2)==0 and (pte&4)!=0: raise pfault  # PTE valid?
+            superpage_mask = 0x3ffff000
+            if (pte&2)==0 and (pte&8)==0:  # second level?
+                superpage_mask = 0x1ff000
+                pte_addr = ((pte<<2)&0xfffffffffff000) | ((addr>>18)&0xff8)
+                pte = struct.unpack_from('Q', *self.page_and_offset(pte_addr))[0]
+                if self.trace_log is not None: self.trace_log.append(f'pt1[{xfmt(self.xlen, pte_addr)}]->{xfmt(self.xlen, pte)}')
+                if (pte&1)==0 or (pte&2)==0 and (pte&4)!=0: raise pfault  # PTE valid?
+                if (pte&2)==0 and (pte&8)==0:  # third level?
+                    superpage_mask = 0
+                    pte_addr = ((pte<<2)&0xfffffffffff000) | ((addr>>9)&0xff8)
+                    pte = struct.unpack_from('Q', *self.page_and_offset(pte_addr))[0]
+                    if self.trace_log is not None: self.trace_log.append(f'pt0[{xfmt(self.xlen, pte_addr)}]->{xfmt(self.xlen, pte)}')
+                    if (pte&1)==0 or (pte&2)==0 and (pte&4)!=0: raise pfault  # PTE valid?
+        if (pte&2)==0 and (pte&8)==0: raise pfault
+        if access=='w' and (pte&4)==0: raise pfault
+        if access=='x' and (pte&8)==0: raise pfault
+        if access=='r' and (pte&2)==0 and not (mxr_bit and (pte&8)!=0): raise pfault
+        if pl==1 and (pte&0x10) and not sum_bit: raise pfault  # supervisor access to user page
+        if (pte<<2)&superpage_mask: raise pfault  # misaligned superpage
+        if (pte&0x40)==0 or access=='w' and (pte&0x80)==0: raise pfault  # Svade: supervisor needs to update A or D bits
+        return (addr & (0xfff|superpage_mask)) | (pte<<2)&pte_paddr_mask
     def store(self, format, addr, data, notify=True, cond=True):
         if not cond: return
+        try: addr = self.pa(addr, access='w')
+        except Trap as t: self.mtrap(t.tval, t.cause); return
         if self.trace_log is not None: self.trace_log.append(f'{xfmt(struct.calcsize(format)*8, data)}->mem[{xfmt(self.xlen, addr)}]')
         if self.trap_misaligned and addr&(struct.calcsize(format)-1) != 0: self.mtrap(addr, 6)
         else: struct.pack_into(format, *self.page_and_offset(zext(self.xlen,addr)), data)
@@ -75,6 +136,8 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
         if self.trap_misaligned and addr&(struct.calcsize(format)-1) != 0: self.mtrap(addr, 4); return fallback
         if zext(self.xlen, addr) & (1<<63): self.mtrap(addr, 5); return fallback
         addr = zext(self.xlen, addr)
+        try: addr = self.pa(addr, access='r')
+        except Trap as t: self.mtrap(t.tval, t.cause); return fallback
         if notify: self.notify_loading(addr)
         data = struct.unpack_from(format, *self.page_and_offset(addr))[0]
         if self.trace_log is not None: self.trace_log.append(f'mem[{xfmt(self.xlen, addr)}]->{xfmt(struct.calcsize(format)*8, data)}')
@@ -134,15 +197,18 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
     def _sraw      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(32,        sext(32,        self.x[rs1]) >> (self.x[rs2]&31))
     def _fence     (self,                     **_): self.pc+=4
     def _fence_i   (self,                     **_): self.pc+=4
+    def _sfence_vma(self,                     **_): self.pc+=4
     def _csrrw     (self, rd, csr, rs1,       **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.x[rs1]               )
     def _csrrs     (self, rd, csr, rs1,       **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]| self.x[rs1])
     def _csrrc     (self, rd, csr, rs1,       **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]&~self.x[rs1])
     def _csrrwi    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, zimm                      )
     def _csrrsi    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]| zimm       )
     def _csrrci    (self, rd, csr, zimm,      **_): self.pc+=4; self.x[rd], self.csr[csr] = self.csr[csr], self.hook_csr(csr, self.csr[csr]&~zimm       )
-    def _mret      (self,                     **_): self.pc = zext(self.xlen, self.csr[self.MEPC]); new_plevel = (self.csr[self.MSTATUS]>>11)&3; self.csr[self.MSTATUS] = self.csr[self.MSTATUS] & ~(0x19ff) | (self.plevel << 11) | 0x80 | ((self.csr[self.MSTATUS]&0x80) >> 4); self.plevel = new_plevel
+    def _mret      (self,                     **_): self.pc = zext(self.xlen, self.csr[self.MEPC]); new_plevel = (self.csr[self.MSTATUS]>>11)&3; self.csr[self.MSTATUS] = self.csr[self.MSTATUS] & ~(0x1888) | 0x80 | ((self.csr[self.MSTATUS]&0x80) >> 4); self.plevel = new_plevel
+    def _sret      (self,                     **_): self.pc = zext(self.xlen, self.csr[self.SEPC]); new_plevel = (self.csr[self.SSTATUS]>>8)&1;  self.csr[self.SSTATUS] = self.csr[self.SSTATUS] & ~(0x122)  | 0x20 | ((self.csr[self.SSTATUS]&0x20) >> 4); self.plevel = new_plevel
     def _ecall     (self,                     **_): self.mtrap(0, 8 if self.plevel == 0 else 11)
     def _ebreak    (self,                     **_): self.mtrap(self.op.addr, 3)
+    def _wfi       (self,                     **_): self.pc+=4
     def _mul       (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )           )
     def _mulh      (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (                self.x[rs1]  *                 self.x[rs2] )>>self.xlen)
     def _mulhu     (self, rd, rs1, rs2,       **_): self.pc+=4; self.x[rd] = sext(self.xlen, (zext(self.xlen, self.x[rs1]) * zext(self.xlen, self.x[rs2]))>>self.xlen)
@@ -291,13 +357,15 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
     def hook_exec(self): return True
     def unimplemented(self, **_): print(f'\n{zext(64,self.op.addr):08x}: unimplemented: {zext(32,self.op.data):08x} {self.op}'); self.exitcode=77
     def step(self, trace=True):
-        self.op = decode(struct.unpack_from('I', *self.page_and_offset(self.pc))[0], 0, self.xlen); self.op.addr=self.pc  # setting op.addr afterwards enables opcode caching.
         self.trace_log = [] if trace else None
+        try: addr = self.pa(self.pc, access='x')
+        except Trap as t: self.mtrap(t.tval, t.cause); return
+        self.op = decode(struct.unpack_from('I', *self.page_and_offset(addr))[0], 0, self.xlen); self.op.addr=addr  # setting op.addr afterwards enables opcode caching.
         if self.hook_exec():
             self.cycle += 1; self.csr[self.MCYCLE] = zext(self.xlen, self.cycle)
             if self.pc & (1<<63): self.mtrap(self.pc, 1)
             else: getattr(self, '_'+self.op.name, self.unimplemented)(**self.op.args)  # dynamic instruction dispatch
-            if trace: print(f'{zext(64,self.op.addr):08x}: {str(self.op):40} # P{self.plevel} [{self.cycle-1}]', ' '.join(self.trace_log))
+            if trace: print(f'{zext(64,self.op.addr):08x}: {str(self.op):40} # { {0:"U",1:"S",2:"H",3:"M"}[self.plevel]} [{self.cycle-1}]', ' '.join(self.trace_log))
             if trace and self.pc-self.op.addr not in (2, 4): print()
     def run(self, limit=0, bpts=set(), trace=True):
         while True:

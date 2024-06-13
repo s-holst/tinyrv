@@ -215,33 +215,24 @@ class flt:
     def __repr__(self) -> str: return ('- ' if self.is_neg else '+ ') + f's: {self.s:b} e: {self.e} raw: {hex(self.raw)} value: {self.float}'
 
 class f32(flt):
-    FLEN      = 32
-    TLEN      = 23  # number of trailing significand bits
-    SIGN_BIT  = 1 << FLEN-1
-    QUIET_BIT = 1 << TLEN-1
-    ABS_MASK  = SIGN_BIT-1
-    SIG_ONE   = 1 << TLEN
-    TSIG_MASK = SIG_ONE-1
-    EXP_MASK  = ABS_MASK ^ TSIG_MASK
-    EXP_BIAS  = (1<<FLEN-TLEN-2)-1
-    QNAN      = EXP_MASK|QUIET_BIT
-    FMAX      = ABS_MASK ^ (1<<TLEN)
+    FLEN, TLEN = 32, 23
     def __init__(self, float_or_raw, flags=0):
         raw = zext(32, float_or_raw) if isinstance(float_or_raw, int) else struct.unpack('I', struct.pack('f', float_or_raw))[0]
         super().__init__(struct.unpack('f', struct.pack('I', raw))[0], raw, flags)
 
 class f64(flt):
-    FLEN      = 64
-    TLEN      = 52  # number of trailing significand bits
-    SIGN_BIT  = 1 << FLEN-1
-    QUIET_BIT = 1 << TLEN-1
-    ABS_MASK  = SIGN_BIT-1
-    SIG_ONE   = 1 << TLEN
-    TSIG_MASK = SIG_ONE-1
-    EXP_MASK  = ABS_MASK ^ TSIG_MASK
-    EXP_BIAS  = (1<<FLEN-TLEN-2)-1
-    QNAN      = EXP_MASK|QUIET_BIT
-    FMAX      = ABS_MASK ^ (1<<TLEN)
+    FLEN, TLEN = 64, 52
     def __init__(self, float_or_raw, flags=0):
         raw = zext(64, float_or_raw) if isinstance(float_or_raw, int) else struct.unpack('Q', struct.pack('d', float_or_raw))[0]
         super().__init__(struct.unpack('d', struct.pack('Q', raw))[0], raw, flags)
+
+for cls in (f32, f64):
+    cls.SIGN_BIT  = 1 << cls.FLEN-1
+    cls.QUIET_BIT = 1 << cls.TLEN-1
+    cls.ABS_MASK  = cls.SIGN_BIT-1
+    cls.SIG_ONE   = 1 << cls.TLEN
+    cls.TSIG_MASK = cls.SIG_ONE-1
+    cls.EXP_MASK  = cls.ABS_MASK ^ cls.TSIG_MASK
+    cls.EXP_BIAS  = (1<<cls.FLEN-cls.TLEN-2)-1
+    cls.QNAN      = cls.EXP_MASK|cls.QUIET_BIT
+    cls.FMAX      = cls.ABS_MASK ^ (1<<cls.TLEN)
