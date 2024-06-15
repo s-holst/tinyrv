@@ -83,25 +83,26 @@ class sim:  # simulates RV32GC, RV64GC (i.e. IMAFDCZicsr_Zifencei)
         if pl==3 or satp==0: return addr  # no virtual memory
         pfault = Trap(addr, {'w':15, 'r':13, 'x':12}[access])
         def load_and_check_pte(pte_addr):
-            pte = struct.unpack_from('I', *self.page_and_offset(pte_addr))[0]
+            pte = struct.unpack_from('I' if self.xlen==32 else 'Q', *self.page_and_offset(pte_addr))[0]
             if self.trace_log is not None: self.trace_log.append(f'pt[{xfmt(self.xlen, pte_addr)}]->{xfmt(self.xlen, pte)}')
             if (pte&1)==0 or (pte&2)==0 and (pte&4)!=0: raise pfault  # PTE valid?
-            return pte
-        if self.xlen==32 and (satp>>31)&1:
-            pte, superpage_mask, pte_paddr_mask = load_and_check_pte(((satp&0x3fffff)<<12) | ((addr>>20)&0xffc)), 0x3ff000, 0x3fffff000
-            if (pte&2)==0 and (pte&8)==0: pte, superpage_mask = load_and_check_pte(((pte<<2)&0x3fffff000) | ((addr>>10)&0xffc)), 0
+            return pte, pte_addr
+        if self.xlen==32 and (satp>>31)&1:  # Sv32
+            pte, pte_addr, superpage_mask, pte_paddr_mask = *load_and_check_pte(((satp&0x3fffff)<<12) | ((addr>>20)&0xffc)), 0x3ff000, 0x3fffff000
+            if (pte&2)==0 and (pte&8)==0: pte, pte_addr, superpage_mask = *load_and_check_pte(((pte<<2)&0x3fffff000) | ((addr>>10)&0xffc)), 0
         elif self.xlen==64 and ((satp>>60)&0xf)==8:  # Sv39
-            pte, superpage_mask, pte_paddr_mask = load_and_check_pte(((satp&0xfffffffffff)<<12) | ((addr>>27)&0xff8)), 0x3ffff000, 0xfffffffffff000
+            pte, pte_addr, superpage_mask, pte_paddr_mask = *load_and_check_pte(((satp&0xfffffffffff)<<12) | ((addr>>27)&0xff8)), 0x3ffff000, 0xfffffffffff000
             if (pte&2)==0 and (pte&8)==0:
-                pte, superpage_mask = load_and_check_pte(((pte<<2)&0xfffffffffff000) | ((addr>>18)&0xff8)), 0x1ff000
-                if (pte&2)==0 and (pte&8)==0: pte, superpage_mask = load_and_check_pte(((pte<<2)&0xfffffffffff000) | ((addr>>9)&0xff8)), 0
+                pte, pte_addr, superpage_mask = *load_and_check_pte(((pte<<2)&0xfffffffffff000) | ((addr>>18)&0xff8)), 0x1ff000
+                if (pte&2)==0 and (pte&8)==0: pte, pte_addr, superpage_mask = *load_and_check_pte(((pte<<2)&0xfffffffffff000) | ((addr>>9)&0xff8)), 0
         if (pte&2)==0 and (pte&8)==0: raise pfault
         if access=='w' and (pte&4)==0: raise pfault
         if access=='x' and (pte&8)==0: raise pfault
         if access=='r' and (pte&2)==0 and not (mxr_bit and (pte&8)!=0): raise pfault
         if pl==1 and (pte&0x10) and not sum_bit: raise pfault  # supervisor access to user page
         if (pte<<2)&superpage_mask: raise pfault  # misaligned superpage
-        if (pte&0x40)==0 or access=='w' and (pte&0x80)==0: raise pfault  # Svade: supervisor needs to update A or D bits
+        #if (pte&0x40)==0 or access=='w' and (pte&0x80)==0: raise pfault  # Svade: supervisor needs to update A or D bits
+        struct.pack_into('I' if self.xlen==32 else 'Q', *self.page_and_offset(pte_addr), pte|0x40|(0x80*(access=='w')))  # Svadu: we update A and D bits
         return (addr & (0xfff|superpage_mask)) | (pte<<2)&pte_paddr_mask
     def store(self, format, addr, data, notify=True, cond=True):
         if not cond: return
