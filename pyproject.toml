@@ -14,9 +14,9 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-  "readchar",
-  "lief",
-  "dataclasses-struct",
+  "readchar==4.2.1",
+  "lief==0.17.0",
+  "dataclasses-struct==1.4.0",
 ]
 
 [project.urls]
