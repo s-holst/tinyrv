@@ -31,7 +31,7 @@ def pack_args(args, xlen=32, sp=0x80000000):
     for o in offsets[:-1]: ptrs.append(struct.pack(ptr_fmt, sp+len(strings)*ptr_bytes+o+padding))
     return sp-ptr_bytes, struct.pack(ptr_fmt, len(strings)) + b''.join(ptrs+([b'\0']*padding)+strings)
 
-@dcs.dataclass()
+@dcs.dataclass_struct(size="std", byteorder="little")
 class kernel_stat2:
     st_dev:     dcs.U64 = 24
     st_ino:     dcs.U64 = 3
@@ -55,7 +55,7 @@ class elf_runner(sim):
     def __init__(self, elf_file, args=[], trace=False, trap_misaligned=False):
         elf = lief.parse(elf_file)
         assert elf.header.machine_type == lief.ELF.ARCH.RISCV
-        super().__init__(xlen=32 if elf.header.identity_class == lief.ELF.ELF_CLASS.CLASS32 else 64, trap_misaligned=trap_misaligned)
+        super().__init__(xlen=32 if elf.header.identity_class == lief.ELF.Header.CLASS.ELF32 else 64, trap_misaligned=trap_misaligned)
         self.elf_file, self.elf, self.trace = elf_file, elf, trace
         load_elf(self, self.elf, trace=trace)
         struct.pack_into('6IQ', *self.page_and_offset(0x1000),  # SAIL-style barebones bootloader
